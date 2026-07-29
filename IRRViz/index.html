@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Prix seuils de rendement — Visualiseur</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◈</span>
+      <div class="brand-text">
+        <h1>Prix seuils de rendement</h1>
+        <p>Visualisation du prix unitaire nécessaire pour atteindre un rendement annuel net cible</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button id="btnExample" class="btn ghost" title="Recharger le jeu de données d'exemple">Exemple</button>
+      <button id="btnClear" class="btn ghost danger" title="Effacer toutes les transactions">Effacer</button>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <aside class="panel" id="sidePanel">
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Transactions</h2>
+          <span class="hint">€ · quantité du bien</span>
+        </div>
+        <div class="tx-list-wrap">
+          <div class="tx-list" id="txBody"></div>
+        </div>
+        <button id="btnAddRow" class="btn small">+ Ligne</button>
+
+        <details class="import">
+          <summary>Importer / coller du CSV</summary>
+          <p class="hint">Format : <code>jj/mm/aaaa,montant,quantité</code> — une ligne par transaction.</p>
+          <textarea id="csvInput" rows="4" placeholder="01/01/2026,-1000.00,1000
+01/02/2026,500.00,-500"></textarea>
+          <button id="btnImport" class="btn small">Ajouter au tableau</button>
+        </details>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Frais</h2>
+        </div>
+        <label class="field">
+          <span>Frais sur ordres (achat/vente)</span>
+          <div class="field-input">
+            <input type="number" id="feeInput" min="0" max="20" step="0.01" value="0.35" />
+            <span class="suffix">%</span>
+          </div>
+        </label>
+        <p class="hint">Déjà inclus dans les montants nets saisis. Retiré à nouveau lors du calcul du prix de marché seuil (vente hypothétique).</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Seuils de rendement annuel</h2>
+        </div>
+        <div id="thresholdChips" class="chips"></div>
+        <div class="add-threshold">
+          <input type="number" id="newThresholdInput" step="0.5" placeholder="ex: 15" />
+          <span class="suffix">%</span>
+          <button id="btnAddThreshold" class="btn small">Ajouter</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Horizon de projection</h2>
+        </div>
+        <label class="field">
+          <span>Date de fin</span>
+          <input type="date" id="horizonInput" />
+        </label>
+        <div class="quickrange" id="quickRange">
+          <button data-y="1" class="btn small">+1 an</button>
+          <button data-y="2" class="btn small">+2 ans</button>
+          <button data-y="5" class="btn small">+5 ans</button>
+          <button data-y="0" class="btn small" id="btnToday">Aujourd'hui</button>
+        </div>
+      </section>
+
+    </aside>
+
+    <main class="chart-area">
+      <div class="chart-toolbar">
+        <div class="legend" id="chartLegend"></div>
+        <div class="chart-actions">
+          <span class="hint zoom-hint">Molette : zoom temps · Maj+molette ou survol axe € : zoom prix · glisser : déplacer (temps + prix)</span>
+          <button id="btnResetZoom" class="btn small ghost">Réinitialiser la vue</button>
+        </div>
+      </div>
+      <div class="chart-wrap" id="chartWrap">
+        <svg id="chartSvg"></svg>
+        <div id="tooltip" class="tooltip hidden"></div>
+        <div id="emptyState" class="empty-state hidden">
+          <p>Ajoutez au moins une transaction pour afficher le graphique.</p>
+        </div>
+      </div>
+      <div class="chart-footer">
+        <div class="stat" id="statPosition"></div>
+        <div class="stat" id="statInvested"></div>
+        <div class="stat" id="statCurrentPrice"></div>
+      </div>
+    </main>
+
+  </div>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
