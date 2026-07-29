@@ -429,24 +429,79 @@ function addEmptyRow(){
   onDataChanged();
 }
 
-function importCsv(text){
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+function importCsv(text) {
+  const lines = text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
   let added = 0;
-  lines.forEach(line => {
-    const parts = line.split(",").map(s => s.trim());
-    if(parts.length < 3) return;
+
+  for (const line of lines) {
+    // On teste les séparateurs possibles.
+    // Le premier qui donne exactement 3 colonnes est retenu.
+    const separators = [";", "\t", ","];
+    let parts = null;
+
+    for (const separator of separators) {
+      const candidate = line
+        .split(separator)
+        .map(value => value.trim());
+
+      if (candidate.length === 3) {
+        parts = candidate;
+        break;
+      }
+    }
+
+    // La ligne doit contenir exactement 3 colonnes.
+    if (!parts) continue;
+
     const [dateStr, amtStr, qtyStr] = parts;
-    let ms;
-    if(dateStr.includes("/")) ms = frenchDateToMs(dateStr);
-    else ms = isoToMs(dateStr);
-    if(!isFinite(ms)) return;
-    const amount = parseFloat(amtStr.replace(",", "."));
-    const quantity = parseFloat(qtyStr.replace(",", "."));
-    if(!isFinite(amount) || !isFinite(quantity)) return;
-    state.transactions.push({ id: nextId(), iso: msToIso(ms), amount, quantity });
+
+    const ms = dateStr.includes("/")
+      ? frenchDateToMs(dateStr)
+      : isoToMs(dateStr);
+
+    if (!Number.isFinite(ms)) continue;
+
+    // Supprime :
+    // - les espaces ordinaires
+    // - les espaces insécables
+    // - € et $
+    const normalizedAmount = amtStr
+      .replace(/[\s\u00A0€$]/g, "")
+      .replace(",", ".");
+
+    const normalizedQuantity = qtyStr
+      .replace(/[\s\u00A0]/g, "")
+      .replace(",", ".");
+
+    const amount = Number.parseFloat(normalizedAmount);
+    const quantity = Number.parseFloat(normalizedQuantity);
+
+    if (
+      !Number.isFinite(amount) ||
+      !Number.isFinite(quantity)
+    ) {
+      continue;
+    }
+
+    state.transactions.push({
+      id: nextId(),
+      iso: msToIso(ms),
+      amount,
+      quantity
+    });
+
     added++;
-  });
-  if(added){ renderTxTable(); onDataChanged(); }
+  }
+
+  if (added) {
+    renderTxTable();
+    onDataChanged();
+  }
+
   return added;
 }
 
