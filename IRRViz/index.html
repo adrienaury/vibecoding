@@ -74,6 +74,23 @@
 
       <section class="card">
         <div class="card-head">
+          <h2>Asset (optionnel)</h2>
+        </div>
+        <label class="field">
+          <span>Symbole Yahoo Finance</span>
+          <div class="field-input">
+            <input type="text" id="assetTickerInput" placeholder="ex: AAPL, MC.PA, BTC-USD" autocomplete="off" />
+          </div>
+        </label>
+        <div class="asset-actions">
+          <button id="btnLoadAsset" class="btn small">Charger</button>
+          <button id="btnClearAsset" class="btn small ghost">Effacer</button>
+        </div>
+        <p class="hint" id="assetStatus">Saisissez un ticker puis cliquez sur « Charger » pour afficher les bougies du sous-jacent.</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
           <h2>Horizon de projection</h2>
         </div>
         <label class="field">

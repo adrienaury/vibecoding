@@ -149,6 +149,11 @@ let state = {
   thresholds: [-10, 0, 3, 6, 10, 20, 35],
   feePercent: 0.35,
   horizonIso: null,
+  // Ticker Yahoo Finance optionnel : si défini et `assetCandles` rempli, on dessine les
+  // bougies du sous-jacent sur le graphique. Le ticker seul est persisté (ressaisi par
+  // l'utilisateur), les bougies sont re-téléchargées à chaque chargement/rallumage.
+  assetTicker: "",
+  assetCandles: null, // { ms, open, high, low, close }[] triés par ms croissant
   // Zoom/positionnement du graphique choisi par l'utilisateur (molette, glisser), persisté pour
   // que la vue reste stable après un rechargement de page. `null` = vue automatique (par défaut).
   viewPersist: null, // { userZoomed, start, end, yUserZoomed, yMin, yMax }
@@ -182,7 +187,11 @@ function saveState(){
       yMin: yOverride ? yOverride.min : null,
       yMax: yOverride ? yOverride.max : null,
     } : null;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    // On ne persiste PAS les bougies elles-mêmes : le ticker suffit, et on refetch à
+    // chaque chargement pour avoir des données fraîches. Ça évite aussi d'encombrer
+    // localStorage avec potentiellement des dizaines de Ko de données OHLC.
+    const persistable = Object.assign({}, state, { assetCandles: null });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
   }catch(e){ /* ignore */ }
 }
 
@@ -193,6 +202,10 @@ function loadState(){
     const parsed = JSON.parse(raw);
     if(!parsed || !Array.isArray(parsed.transactions)) return false;
     state = parsed;
+    // Les états sauvegardés avant l'ajout de l'asset n'ont pas ces champs :
+    // on les initialise pour éviter les `undefined` plus tard.
+    if(typeof state.assetTicker !== "string") state.assetTicker = "";
+    if(!Array.isArray(state.assetCandles)) state.assetCandles = null;
     parsed.transactions.forEach(t => { if(!t.id) t.id = nextId(); });
     return true;
   }catch(e){ return false; }
@@ -356,6 +369,10 @@ const el = {
   statPosition: document.getElementById("statPosition"),
   statInvested: document.getElementById("statInvested"),
   statCurrentPrice: document.getElementById("statCurrentPrice"),
+  assetTickerInput: document.getElementById("assetTickerInput"),
+  btnLoadAsset: document.getElementById("btnLoadAsset"),
+  btnClearAsset: document.getElementById("btnClearAsset"),
+  assetStatus: document.getElementById("assetStatus"),
 };
 
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -657,8 +674,8 @@ function render(){
   });
   lastCurves = curves;
 
-  // Domaine Y : auto-ajusté aux courbes visibles + prix des transactions visibles,
-  // sauf si l'utilisateur a défini un zoom Y manuel (yOverride).
+  // Domaine Y : auto-ajusté aux courbes visibles + prix des transactions visibles +
+  // bougies de l'asset visibles (si chargées), sauf si l'utilisateur a défini un zoom Y manuel.
   let yMax = 0;
   thresholds.forEach(pct => {
     (curves[pct] || []).forEach(seg => {
@@ -672,6 +689,12 @@ function render(){
     const price = impliedMarketPrice(p, feeFrac);
     if(price != null && isFinite(price)){ txPrices.push(price); if(price > yMax) yMax = price; }
   });
+  if(state.assetCandles){
+    state.assetCandles.forEach(c => {
+      if(c.ms < view.start || c.ms > view.end) return;
+      if(c.high > yMax) yMax = c.high;
+    });
+  }
   if(yMax <= 0) yMax = 1;
   yMax *= 1.12;
   let yMin = 0;
@@ -704,6 +727,9 @@ function drawSvg(model, segMeta, curves, thresholds, layout, txPrices){
 
   const gGrid = svgEl("g", { class: "grid" });
   const gBands = svgEl("g", { class: "bands" });
+  // gAsset (candlesticks) est placé entre les bandes et les courbes : les bougies servent
+  // de référence visuelle mais ne doivent pas masquer les courbes de seuils.
+  const gAsset = svgEl("g", { class: "asset" });
   const gAxes = svgEl("g", { class: "axes" });
   const gCurves = svgEl("g", { class: "curves" });
   const gMarkers = svgEl("g", { class: "markers" });
@@ -712,7 +738,7 @@ function drawSvg(model, segMeta, curves, thresholds, layout, txPrices){
   const gPriceLabels = svgEl("g", { class: "price-labels" });
   const gHoverLabels = svgEl("g", { class: "hover-labels" });
   const gInteract = svgEl("g", { class: "interact" });
-  svg.appendChild(gGrid); svg.appendChild(gBands); svg.appendChild(gAxes); svg.appendChild(gCurves);
+  svg.appendChild(gGrid); svg.appendChild(gBands); svg.appendChild(gAsset); svg.appendChild(gAxes); svg.appendChild(gCurves);
   svg.appendChild(gMarkers); svg.appendChild(gPriceLabels); svg.appendChild(gHoverLabels); svg.appendChild(gInteract);
 
   // clip path
@@ -721,6 +747,7 @@ function drawSvg(model, segMeta, curves, thresholds, layout, txPrices){
   clip.appendChild(svgEl("rect", { x: m.left, y: m.top, width: plotW, height: plotH }));
   defs.appendChild(clip);
   gBands.setAttribute("clip-path", `url(#${clipId})`);
+  gAsset.setAttribute("clip-path", `url(#${clipId})`);
   gCurves.setAttribute("clip-path", `url(#${clipId})`);
   gMarkers.setAttribute("clip-path", `url(#${clipId})`);
 
@@ -771,6 +798,13 @@ function drawSvg(model, segMeta, curves, thresholds, layout, txPrices){
     const lower = i >= 0 ? thresholds[i] : null;
     const upper = i + 1 < n ? thresholds[i + 1] : null;
     drawBand(gBands, segMeta, curves, lower, upper, layout, i, n);
+  }
+
+  // ---- Bougies de l'asset (si chargées) ----
+  // Les bougies sont clippées à la zone de tracé (gAsset a le clip-path), donc rien ne
+  // déborde dans les marges même si une bougie est plus haute que yMax.
+  if(state.assetCandles){
+    drawCandles(gAsset, layout, state.assetCandles, view.start, view.end);
   }
 
   // ---- Lignes de seuil ----
@@ -1010,6 +1044,11 @@ function renderLegend(thresholds){
   const cash = document.createElement("div"); cash.className = "litem";
   cash.innerHTML = `<span style="width:9px;height:9px;background:#9aa4b8;display:inline-block;clip-path:polygon(50% 0,0 100%,100% 100%);"></span><span>Flux (dividende/frais)</span>`;
   el.chartLegend.appendChild(buy); el.chartLegend.appendChild(sell); el.chartLegend.appendChild(cash);
+  if(state.assetTicker && state.assetCandles && state.assetCandles.length){
+    const asset = document.createElement("div"); asset.className = "litem";
+    asset.innerHTML = `<span style="width:9px;height:9px;background:#3fb968;display:inline-block;border:1px solid #2a8a4d;"></span><span style="color:var(--accent-2);">${state.assetTicker} (bougies)</span>`;
+    el.chartLegend.appendChild(asset);
+  }
 }
 
 /* ---------------------------------------------------------------------
@@ -1034,6 +1073,32 @@ function renderStats(model, feeFrac){
   } else {
     el.statCurrentPrice.innerHTML = `Position actuellement soldée`;
   }
+
+  // Prix actuel de l'asset sous-jacent (dernière bougie disponible) — affiché en complément
+  // quand l'asset est chargé, pour comparer directement avec le prix seuil calculé.
+  if(state.assetCandles && state.assetCandles.length){
+    const last = state.assetCandles[state.assetCandles.length - 1];
+    const lastLabel = msToFrLabel(last.ms, true);
+    const html = `<div class="stat">${state.assetTicker} dernier cours (<b>${lastLabel}</b>) : <b>${fmtEUR3.format(last.close)}</b></div>`;
+    // On insère cette stat dans le footer sans écraser les autres : append, pas innerHTML.
+    // Mais comme les stats sont régénérées à chaque render, on les recrée proprement.
+    // Solution : on garde `statCurrentPrice` tel quel et on stocke l'info dans un élément
+    // dédié qu'on (re)crée ici.
+    ensureAssetStatEl().innerHTML = html.replace(/^<div class="stat">|<\/div>$/g, "");
+  } else if(el.assetStat){
+    el.assetStat.remove();
+    el.assetStat = null;
+  }
+}
+
+function ensureAssetStatEl(){
+  if(!el.assetStat){
+    el.assetStat = document.createElement("div");
+    el.assetStat.className = "stat";
+    el.chartFooter = document.querySelector(".chart-footer");
+    if(el.chartFooter) el.chartFooter.appendChild(el.assetStat);
+  }
+  return el.assetStat;
 }
 
 /* ---------------------------------------------------------------------
@@ -1054,6 +1119,44 @@ function attachInteraction(overlay, crossX, crossY, layout, thresholds, model, s
       if(dist <= hit.r && dist < bestDist){ best = hit; bestDist = dist; }
     }
     return best;
+  }
+
+  // Trouve la bougie la plus proche du curseur (par proximité horizontale), dans la
+  // moitié de l'écart inter-bougies. Renvoie `null` si l'asset n'est pas chargé.
+  // Le hit-test est uniquement horizontal (une bougie "appartient" à un jour donné) ;
+  // la proximité verticale est indicative mais pas requise pour le déclenchement.
+  function findNearestCandle(px){
+    if(!state.assetCandles || state.assetCandles.length === 0) return null;
+    let step = DAY;
+    if(state.assetCandles.length >= 2){
+      let s = 0;
+      for(let i = 1; i < state.assetCandles.length; i++) s += state.assetCandles[i].ms - state.assetCandles[i - 1].ms;
+      step = s / (state.assetCandles.length - 1);
+    }
+    const halfWindow = step / 2;
+    const msAtCursor = xInv(px);
+    // Recherche binaire serait plus performante, mais le tableau est typiquement < 10k
+    // entrées et on est dans un handler de souris : un scan linéaire reste imperceptible.
+    let best = null, bestDelta = Infinity;
+    for(const c of state.assetCandles){
+      const d = Math.abs(c.ms - msAtCursor);
+      if(d < bestDelta && d <= halfWindow){ best = c; bestDelta = d; }
+    }
+    return best;
+  }
+
+  function renderCandleTooltip(c){
+    const up = c.close >= c.open;
+    const change = c.close - c.open;
+    const changePct = c.open !== 0 ? (change / c.open) * 100 : 0;
+    const sign = change >= 0 ? "+" : "";
+    let html = `<div class="tt-date">${msToFrLabel(c.ms, true)} · ${state.assetTicker || "Asset"}</div>`;
+    html += `<div class="tt-row"><span>Ouverture</span><span class="v">${fmtEUR3.format(c.open)}</span></div>`;
+    html += `<div class="tt-row"><span>Plus haut</span><span class="v">${fmtEUR3.format(c.high)}</span></div>`;
+    html += `<div class="tt-row"><span>Plus bas</span><span class="v">${fmtEUR3.format(c.low)}</span></div>`;
+    html += `<div class="tt-row"><span>Clôture</span><span class="v">${fmtEUR3.format(c.close)}</span></div>`;
+    html += `<div class="tt-row"><span>Variation</span><span class="v">${sign}${fmtEUR3.format(change)} (${sign}${fmtNum2.format(changePct)} %)</span></div>`;
+    el.tooltip.innerHTML = html;
   }
 
   function renderMarkerTooltip(hit){
@@ -1097,6 +1200,21 @@ function attachInteraction(overlay, crossX, crossY, layout, thresholds, model, s
     if(nearMarker){
       renderMarkerTooltip(nearMarker);
       clearHoverLabels();
+      positionTooltip(evt, overlay.ownerSVGElement);
+      return;
+    }
+
+    // Bougie de l'asset (si chargée et sous le curseur) : on affiche l'OHLC plutôt que
+    // le simple "prix pointé", mais on garde les étiquettes de seuils le long de la
+    // verticale pour la lecture simultanée.
+    const nearCandle = findNearestCandle(px);
+    if(nearCandle){
+      const ms = xInv(px);
+      clearHoverLabels();
+      renderThresholdLabelsAtX(gHoverLabels, model, thresholds, layout, segMeta, curves, {
+        dateMs: ms, anchorX: px, visible: true, fallbackToEdge: false,
+      });
+      renderCandleTooltip(nearCandle);
       positionTooltip(evt, overlay.ownerSVGElement);
       return;
     }
@@ -1340,6 +1458,24 @@ function initControls(){
     flushViewSave();
   });
 
+  // Asset (optionnel) : saisie libre d'un ticker Yahoo Finance, validation par Entrée
+  // ou clic sur « Charger ». « Effacer » vide la saisie et les bougies sans toucher au reste.
+  el.btnLoadAsset.addEventListener("click", () => {
+    const sym = el.assetTickerInput.value.trim();
+    fetchAssetData(sym);
+  });
+  el.assetTickerInput.addEventListener("keydown", evt => {
+    if(evt.key === "Enter") el.btnLoadAsset.click();
+  });
+  el.btnClearAsset.addEventListener("click", () => {
+    el.assetTickerInput.value = "";
+    state.assetTicker = "";
+    state.assetCandles = null;
+    saveState();
+    setAssetStatus("", "");
+    render();
+  });
+
   window.addEventListener("resize", () => onDataChanged());
   if(window.ResizeObserver){
     new ResizeObserver(() => onDataChanged()).observe(el.chartWrap);
@@ -1351,7 +1487,148 @@ function renderAll(){
   renderChips();
   el.feeInput.value = state.feePercent;
   el.horizonInput.value = state.horizonIso || msToIso(todayMs() + 365 * DAY);
+  el.assetTickerInput.value = state.assetTicker || "";
+  setAssetStatus("", "");
   render();
+}
+
+/* ---------------------------------------------------------------------
+   Asset (optionnel) — récupération des bougies OHLC via Yahoo Finance.
+   Yahoo Finance ne supporte pas CORS : on passe par le proxy local
+   `proxy.py` (port 8765 par défaut).
+   --------------------------------------------------------------------- */
+
+const LOCAL_PROXY_PORT = 8765;
+const LOCAL_PROXY_URL = `http://127.0.0.1:${LOCAL_PROXY_PORT}`;
+
+// Période demandée : on couvre un peu avant la première transaction et un peu après
+// l'horizon, pour que les bougies restent visibles même quand l'utilisateur zoome.
+function assetFetchRange(){
+  const tx = state.transactions.filter(t => t.iso && isFinite(t.amount) && isFinite(t.quantity));
+  let minMs = tx.length ? Math.min(...tx.map(t => isoToMs(t.iso))) : todayMs() - 365 * DAY;
+  if(!isFinite(minMs)) minMs = todayMs() - 365 * DAY;
+  const horizonMs = state.horizonIso ? isoToMs(state.horizonIso) : (todayMs() + 365 * DAY);
+  const maxMs = Math.max(todayMs(), horizonMs);
+  return {
+    period1: Math.floor((minMs - 30 * DAY) / 1000),
+    period2: Math.floor((maxMs + 30 * DAY) / 1000),
+  };
+}
+
+async function fetchAssetData(ticker){
+  const sym = (ticker || "").trim().toUpperCase();
+  if(!sym){
+    state.assetTicker = "";
+    state.assetCandles = null;
+    saveState();
+    render();
+    return;
+  }
+  const { period1, period2 } = assetFetchRange();
+  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?period1=${period1}&period2=${period2}&interval=1d&events=history`;
+  const proxyUrl = `${LOCAL_PROXY_URL}/?url=${encodeURIComponent(yahooUrl)}`;
+
+  setAssetStatus("Chargement…", "");
+  try{
+    const res = await fetch(proxyUrl, { method: "GET" });
+    if(!res.ok){
+      const text = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
+    }
+    const data = await res.json();
+    const result = data && data.chart && data.chart.result && data.chart.result[0];
+    if(!result){
+      const errDesc = data && data.chart && data.chart.error && data.chart.error.description;
+      throw new Error(errDesc || "Réponse vide de Yahoo Finance");
+    }
+    const ts = result.timestamp;
+    const quote = result.indicators && result.indicators.quote && result.indicators.quote[0];
+    if(!ts || !quote || !Array.isArray(quote.open)){
+      throw new Error("Données OHLC manquantes");
+    }
+    const candles = [];
+    for(let i = 0; i < ts.length; i++){
+      const o = quote.open[i], h = quote.high[i], l = quote.low[i], c = quote.close[i];
+      if(o == null || h == null || l == null || c == null) continue;
+      candles.push({ ms: ts[i] * 1000, open: o, high: h, low: l, close: c });
+    }
+    if(candles.length === 0){
+      throw new Error("Aucune bougie OHLC exploitable");
+    }
+    candles.sort((a, b) => a.ms - b.ms);
+    state.assetTicker = sym;
+    state.assetCandles = candles;
+    saveState();
+    setAssetStatus(`${candles.length} bougies chargées pour ${sym}.`, "success");
+    render();
+  }catch(e){
+    state.assetTicker = sym;
+    state.assetCandles = null;
+    saveState();
+    const msg = e && e.message ? e.message : String(e);
+    if(msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("ERR_CONNECTION_REFUSED")){
+      setAssetStatus(`Proxy local injoignable. Lancez "python proxy.py" (port ${LOCAL_PROXY_PORT}) puis réessayez.`, "error");
+    }else{
+      setAssetStatus(`Échec : ${msg}`, "error");
+    }
+    render();
+  }
+}
+
+function setAssetStatus(text, kind){
+  el.assetStatus.textContent = text;
+  el.assetStatus.classList.remove("error", "success");
+  if(kind) el.assetStatus.classList.add(kind);
+}
+
+/* ---------------------------------------------------------------------
+   Dessin des bougies (candlesticks) — un rect (corps) + une ligne (mèche) par jour.
+   On n'affiche que les bougies qui chevauchent la fenêtre temporelle visible
+   (clipping appliqué via gAsset), avec une largeur de corps proportionnelle à
+   l'espacement visible entre bougies (pour rester lisible à tous niveaux de zoom).
+   --------------------------------------------------------------------- */
+
+function drawCandles(gAsset, layout, candles, viewStart, viewEnd){
+  if(!candles || candles.length === 0) return;
+  const { xScale, yScale, yMax, plotH } = layout;
+  // Filtre rapide : on ne garde que les bougies qui chevauchent la fenêtre visible,
+  // en s'autorisant une journée de marge de chaque côté.
+  const visible = candles.filter(c => c.ms >= viewStart - DAY && c.ms <= viewEnd + DAY);
+  if(visible.length === 0) return;
+
+  // Largeur du corps : on prend l'écart médian entre bougies consécutives (jours ouvrés).
+  let step = DAY;
+  if(visible.length >= 2){
+    let s = 0;
+    for(let i = 1; i < visible.length; i++) s += visible[i].ms - visible[i - 1].ms;
+    step = s / (visible.length - 1);
+  }
+  const stepPx = xScale(viewStart + step) - xScale(viewStart);
+  const bodyW = Math.max(2, Math.min(14, stepPx * 0.7));
+
+  for(const c of visible){
+    const cx = xScale(c.ms);
+    if(cx < layout.m.left - bodyW || cx > layout.m.left + layout.plotW + bodyW) continue;
+    const up = c.close >= c.open;
+    const yHigh = yScale(Math.min(c.high, yMax));
+    const yLow = yScale(Math.max(c.low, 0));
+    const yOpen = yScale(Math.min(c.open, yMax));
+    const yClose = yScale(Math.min(c.close, yMax));
+    const yBodyTop = Math.min(yOpen, yClose);
+    const yBodyBot = Math.max(yOpen, yClose);
+    const bodyH = Math.max(1, yBodyBot - yBodyTop);
+
+    // Mèche (haut -> bas) en arrière-plan du corps
+    gAsset.appendChild(svgEl("line", {
+      class: "candlewick " + (up ? "candle-up" : "candle-down"),
+      x1: cx, x2: cx, y1: yHigh, y2: yLow,
+    }));
+    // Corps
+    gAsset.appendChild(svgEl("rect", {
+      class: "candlebody " + (up ? "candle-up" : "candle-down"),
+      x: cx - bodyW / 2, y: yBodyTop, width: bodyW, height: bodyH, rx: 1,
+    }));
+  }
 }
 
 /* ---------------------------------------------------------------------
@@ -1367,6 +1644,11 @@ function init(){
   initControls();
   setupGlobalChartInteraction();
   renderAll();
+  // Si un ticker d'asset est persisté (mais pas ses bougies, volontairement), on le
+  // retélécharge automatiquement pour repeupler le graphique avec des données fraîches.
+  if(state.assetTicker && !state.assetCandles){
+    fetchAssetData(state.assetTicker);
+  }
 }
 
 document.addEventListener("DOMContentLoaded", init);

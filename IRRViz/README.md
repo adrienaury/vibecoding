@@ -11,8 +11,39 @@ Mini-application web statique pour visualiser et explorer une idée autour de l'
 - Graphique interactif avec zoom (molette), pan (glisser) et crosshair
 - Étiquettes de prix par seuil en survol et sur la ligne « aujourd'hui »
 - Statistiques de position en bas du graphique
+- **Asset optionnel** : saisie d'un ticker Yahoo Finance pour afficher les bougies OHLC du sous-jacent sur le graphique
 - Persistance locale de l'état et de la vue
-- 100% local, sans dépendance externe
+- 100% local, sans dépendance externe (le proxy pour l'asset est optionnel et local)
+
+## Asset (Yahoo Finance)
+
+Une carte « Asset (optionnel) » dans le panneau latéral permet de saisir un ticker Yahoo Finance (ex. `AAPL`, `MC.PA`, `BTC-USD`) et d'afficher les **bougies japonaises** du sous-jacent sur le graphique :
+
+- Période : du mois précédant la première transaction jusqu'à un mois après l'horizon
+- Fréquence : 1 bougie par jour
+- 4 valeurs par jour : ouverture, plus haut, plus bas, clôture
+- Bougies vertes si clôture ≥ ouverture, rouges sinon
+- Le ticker saisi est persisté dans `localStorage` ; les bougies sont re-téléchargées à chaque chargement pour des données fraîches
+- CORS : Yahoo Finance ne supporte pas CORS directement. Un proxy local Python est fourni pour contourner cette limitation
+- Le survol d'une bougie affiche l'OHLC et la variation dans l'infobulle
+- L'échelle Y s'ajuste automatiquement pour inclure les prix de l'asset
+
+### Proxy local (requis)
+
+Pour utiliser la fonctionnalité Asset, lancez le petit serveur proxy Python fourni :
+
+```bash
+cd IRRViz
+python proxy.py
+```
+
+Le proxy écoute sur `http://127.0.0.1:8765`. Vous pouvez changer le port :
+
+```bash
+python proxy.py 9000
+```
+
+Le proxy n'autorise que les domaines `query1.finance.yahoo.com` et `query2.finance.yahoo.com`, et il n'a besoin que de la bibliothèque standard Python.
 
 ## Statistiques d'utilisation des modèles
 
