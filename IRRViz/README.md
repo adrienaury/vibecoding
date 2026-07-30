@@ -49,6 +49,15 @@ Le proxy n'autorise que les domaines `query1.finance.yahoo.com` et `query2.finan
 
 | Heure | Modèle | Coût (USD) | Requêtes | Input Tokens | Output Tokens |
 |-------|--------|-----------|----------|-------------|---------------|
+| 2026-07-30 08:00:00 | alibaba/qwen3.7-plus | 0.047466 | 2 | 242472 | 3468 |
+| 2026-07-30 08:00:00 | auto-routing/classifier | 0.000012 | 1 | 0 | 0 |
+| 2026-07-30 08:00:00 | mistral-embed-2312 | 0.000225 | 16 | 44849 | 0 |
+| 2026-07-30 08:00:00 | xai/grok-4.5 | 0.260266 | 2 | 224664 | 368 |
+| 2026-07-30 06:00:00 | moonshotai/kimi-k2.7-code | 0.365260 | 9 | 925748 | 7009 |
+| 2026-07-30 06:00:00 | alibaba/qwen3.7-plus | 0.086771 | 4 | 361271 | 3013 |
+| 2026-07-30 06:00:00 | mistral-embed-2312 | 0.001889 | 128 | 378976 | 0 |
+| 2026-07-30 06:00:00 | auto-routing/classifier | 0.000065 | 5 | 0 | 0 |
+| 2026-07-30 06:00:00 | minimax/minimax-m3 | 0.299157 | 61 | 3970723 | 17245 |
 | 2026-07-28 09:00:00 | anthropic/claude-sonnet-5 | 8.595666 | 85 | 20135906 | 73670 |
 | 2026-07-28 08:00:00 | google/gemma-4-26b-a4b-it | 0.000213 | 2 | 2917 | 22 |
 | 2026-07-28 08:00:00 | alibaba/qwen3.7-plus | 0.017090 | 1 | 13535 | 9968 |
@@ -65,10 +74,13 @@ Le proxy n'autorise que les domaines `query1.finance.yahoo.com` et `query2.finan
 | Modèle | Coût total (USD) | Requêtes | Input Tokens | Output Tokens |
 |--------|-----------------|----------|-------------|---------------|
 | anthropic/claude-sonnet-5 | 13.783341 | 168 | 12959029 | 183697 |
-| minimax/minimax-m3 | 0.332128 | 60 | 3860376 | 53096 |
-| alibaba/qwen3.7-plus | 0.017090 | 1 | 13535 | 9968 |
-| auto-routing/classifier | 0.000070 | 6 | 0 | 0 |
+| minimax/minimax-m3 | 0.631285 | 121 | 7831099 | 70341 |
+| moonshotai/kimi-k2.7-code | 0.365260 | 9 | 925748 | 7009 |
+| xai/grok-4.5 | 0.260266 | 2 | 224664 | 368 |
+| alibaba/qwen3.7-plus | 0.151327 | 7 | 617278 | 16449 |
+| mistral-embed-2312 | 0.002114 | 144 | 423825 | 0 |
 | google/gemma-4-26b-a4b-it | 0.000848 | 6 | 5809 | 62 |
+| auto-routing/classifier | 0.000147 | 12 | 0 | 0 |
 | stepfun/step-3.7-flash | 0.000000 | 1 | 13091 | 10000 |
 | inclusionai/ling-3.0-flash-free | 0.000000 | 21 | 497513 | 10783 |
 
@@ -76,7 +88,7 @@ Le proxy n'autorise que les domaines `query1.finance.yahoo.com` et `query2.finan
 
 | Métrique | Valeur |
 |----------|--------|
-| **Coût total** | 14.133477 USD |
-| **Requêtes totales** | 263 |
-| **Input Tokens totaux** | 35 472 640 |
-| **Output Tokens totaux** | 267 606 |
+| **Coût total** | 15.194588 USD |
+| **Requêtes totales** | 491 |
+| **Input Tokens totaux** | 41 621 343 |
+| **Output Tokens totaux** | 298 709 |
