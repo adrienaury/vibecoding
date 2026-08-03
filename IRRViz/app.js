@@ -302,6 +302,9 @@ function discountedCumSums(model, base){
 
 // Résout le prix seuil P à partir de la somme actualisée S, de la quantité détenue Q,
 // du facteur temps tau et du taux cible (base = 1+x). Seule implémentation de l'inversion XIRR.
+// Les montants saisis incluent DÉJÀ les frais : le prix seuil est le prix marché "brut" qui
+// rapporte `P * Q * (1 - feeFrac)` net à la revente hypothétique. Le rendement cible doit donc
+// porter sur la somme nette perçue, ce qui revient à majorer le prix par `1 / (1 - feeFrac)`.
 function computePriceFromS(S, Q, tau, base, feeFrac){
   const F = -S * Math.pow(base, tau);
   let P = F / (Q * (1 - feeFrac));
@@ -329,18 +332,14 @@ function priceSeriesForThreshold(model, segmentsMeta, xPct, feeFrac){
   });
 }
 
-// Prix implicite (brut, ramené au marché en ré-ajoutant les frais) d'une transaction réelle
-function impliedMarketPrice(tx, feeFrac){
+// Prix marché implicite d'une transaction réelle, DÉJÀ net de frais : les montants saisis
+// incluent les frais, donc le prix correspond exactement à `|montant| / quantité`.
+// Aucun ré-ajustement de frais ici : ce prix doit être cohérent avec la formule du prix
+// seuil (computePriceFromS), qui réintègre elle aussi les frais dans le prix.
+function impliedMarketPrice(tx){
   if(tx.quantity === 0) return null;
   const q = Math.abs(tx.quantity);
-  if(tx.amount < 0){
-    // achat : cash sorti = q * prix * (1+fee)
-    return Math.abs(tx.amount) / (q * (1 + feeFrac));
-  } else {
-    // vente : cash entré = q * prix * (1-fee)
-    if(feeFrac >= 1) return null;
-    return tx.amount / (q * (1 - feeFrac));
-  }
+  return Math.abs(tx.amount) / q;
 }
 
 /* ---------------------------------------------------------------------
@@ -686,7 +685,7 @@ function render(){
   const txPrices = [];
   model.points.forEach(p => {
     if(p.ms < view.start || p.ms > view.end) return;
-    const price = impliedMarketPrice(p, feeFrac);
+    const price = impliedMarketPrice(p);
     if(price != null && isFinite(price)){ txPrices.push(price); if(price > yMax) yMax = price; }
   });
   if(state.assetCandles){
@@ -836,7 +835,7 @@ function drawSvg(model, segMeta, curves, thresholds, layout, txPrices){
       gMarkers.appendChild(tri);
       currentMarkerHits.push({ x, y: y - 4, r: 8, type: "cash", ms: p.ms, amount: p.amount, qty: p.quantity });
     } else {
-      const price = impliedMarketPrice(p, layout.feeFrac);
+      const price = impliedMarketPrice(p);
       if(price == null || !isFinite(price)) return;
       const y = yScale(Math.min(price, yMax));
       const isBuy = p.amount < 0;
