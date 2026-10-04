@@ -39,6 +39,7 @@ const el = {
   importDialog: $("importDialog"), importForm: $("importForm"), csvText: $("csvText"), csvFile: $("csvFile"),
   dropzone: $("dropzone"), importPreview: $("importPreview"), importDedupe: $("importDedupe"), btnImportConfirm: $("btnImportConfirm"),
   helpDialog: $("helpDialog"), restoreFile: $("restoreFile"), toasts: $("toasts"),
+  btnInstall: $("btnInstall"), offlineBadge: $("offlineBadge"),
 };
 
 const mqLight = window.matchMedia("(prefers-color-scheme: light)");
@@ -567,7 +568,11 @@ async function loadAsset(ticker, { silent = false } = {}){
   }catch(err){
     if(req !== assetRequest) return;
     if(err.code === "proxy") setProxyDot(false);
-    assetState = { status: "error", message: err.message };
+    const offline = navigator.onLine === false;
+    const message = offline
+      ? (assetData ? "Hors ligne : affichage des derniers cours en cache." : "Hors ligne : les cours ne peuvent pas être téléchargés.")
+      : err.message;
+    assetState = { status: "error", message };
     if(!silent) toast(err.message, { type: "error", timeout: 7000 });
   }
   renderAssetStatus(); pushChart(); renderKpis(); renderLegend();
@@ -1318,6 +1323,56 @@ function initPositions(){
 }
 
 /* =====================================================================
+   Application installable et hors ligne (PWA)
+   ===================================================================== */
+
+let installPrompt = null;
+
+function initPwa(){
+  // Le service worker n'est disponible qu'en http(s) — pas en ouvrant le fichier depuis le disque.
+  if("serviceWorker" in navigator && /^https?:$/.test(location.protocol)){
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(err => console.warn("Service worker non enregistré :", err));
+    });
+  }
+
+  window.addEventListener("beforeinstallprompt", e => {
+    e.preventDefault();
+    installPrompt = e;
+    el.btnInstall.hidden = false;
+  });
+  window.addEventListener("appinstalled", () => {
+    installPrompt = null;
+    el.btnInstall.hidden = true;
+    toast("IRRViz est installé : retrouvez-le parmi vos applications.", { type: "success", timeout: 5000 });
+  });
+  el.btnInstall.addEventListener("click", async () => {
+    if(!installPrompt) return;
+    const prompt = installPrompt;
+    installPrompt = null;
+    el.btnInstall.hidden = true;
+    prompt.prompt();
+    try{ await prompt.userChoice; }catch(e){ /* ignore */ }
+  });
+
+  const onConnectivity = notify => {
+    const offline = navigator.onLine === false;
+    el.offlineBadge.hidden = !offline;
+    if(!notify) return;
+    if(offline){
+      toast("Hors ligne : l'application reste utilisable et vos modifications sont enregistrées.", { timeout: 4000 });
+    } else {
+      toast("Connexion rétablie", { type: "success", timeout: 2000 });
+      // Rafraîchit des cours Yahoo affichés depuis le cache pendant la coupure.
+      if(S().priceSource === "yahoo" && S().assetTicker && (!assetData || assetData.cached)) loadAsset(S().assetTicker, { silent: true });
+    }
+  };
+  window.addEventListener("online", () => onConnectivity(true));
+  window.addEventListener("offline", () => onConnectivity(true));
+  onConnectivity(false);
+}
+
+/* =====================================================================
    Synchronisation état → interface
    ===================================================================== */
 
@@ -1422,6 +1477,7 @@ function init(){
   });
 
   initPositions();
+  initPwa();
   initThresholds();
   initSettings();
   initImportExport();
