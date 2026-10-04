@@ -1,16 +1,23 @@
 /* =========================================================================
    IRRViz 2 — état applicatif, persistance localStorage, annuler / rétablir.
+
+   L'application gère plusieurs positions (« dossiers ») : chacune possède ses
+   transactions, seuils, frais, horizon, symbole, vue du graphique, historique
+   d'annulation et cache de cours. Les préférences d'affichage (thème, panneau…)
+   et le port du proxy sont communs à toutes les positions.
    ========================================================================= */
 
 (function(root){
 "use strict";
 
 const IRR = root.IRR = root.IRR || {};
-const U = IRR.util;
+const U = IRR.util || (typeof require !== "undefined" ? require("./util.js") : null);
 
-const STORAGE_KEY = "irrviz2-state-v1";
-const CANDLES_KEY = "irrviz2-candles-v1";
-const V1_STORAGE_KEY = "mwviz-state-v1"; // clé utilisée par IRRViz v1 (même origine)
+const STORAGE_KEY = "irrviz2-app-v2";
+const PRICES_PREFIX = "irrviz2-prices-v2:";       // + id de position
+const LEGACY_KEY = "irrviz2-state-v1";            // IRRViz 2, version mono-position
+const LEGACY_CANDLES_KEY = "irrviz2-candles-v1";
+const V1_STORAGE_KEY = "mwviz-state-v1";          // IRRViz v1 (même origine)
 const UNDO_LIMIT = 100;
 
 const DEFAULT_THRESHOLDS = [-10, 0, 3, 6, 10, 20, 35];
@@ -22,39 +29,53 @@ const SAMPLE_TRANSACTIONS = [
   { iso: "2026-04-01", amount: -500.00, quantity: 410 },
 ];
 
-function defaultState(){
+function defaultUi(){
   return {
+    theme: "auto",          // auto | light | dark
+    panelCollapsed: false,
+    collapsed: {},          // cartes repliées du panneau latéral
+    showBands: true,
+    showCandles: true,
+    showLabels: true,
+  };
+}
+
+function defaultPosition(name = "Ma position"){
+  return {
+    id: U.makeId("p"),
+    name,
+    autoName: true,         // le nom suit le symbole chargé tant que l'utilisateur ne l'a pas renommé
+    createdAt: Date.now(),
     transactions: [],
     thresholds: DEFAULT_THRESHOLDS.slice(),
     hiddenThresholds: [],
     feePercent: 0.35,
     horizonIso: null,
     assetTicker: "",
-    proxyPort: 8765,
-    ui: {
-      theme: "auto",          // auto | light | dark
-      panelCollapsed: false,
-      collapsed: {},          // cartes repliées du panneau latéral
-      showBands: true,
-      showCandles: true,
-      showLabels: true,
-    },
-    view: null,               // zoom/pan persisté { start, end, yMin, yMax }
+    view: null,             // zoom/pan persisté { start, end, yMin, yMax }
   };
 }
 
-// Champs "métier" concernés par annuler/rétablir (pas la vue ni les préférences d'affichage).
+// Champs "métier" concernés par annuler/rétablir (pas la vue, ni le nom de la position).
 const DATA_KEYS = ["transactions", "thresholds", "hiddenThresholds", "feePercent", "horizonIso", "assetTicker"];
 
-function snapshot(state){
+function snapshot(pos){
   const o = {};
-  DATA_KEYS.forEach(k => { o[k] = state[k]; });
+  DATA_KEYS.forEach(k => { o[k] = pos[k]; });
   return JSON.stringify(o);
 }
 
-function sanitize(raw){
-  const s = defaultState();
+/* ---------------------------------------------------------------------
+   Validation des données lues (localStorage, sauvegardes importées)
+   --------------------------------------------------------------------- */
+
+function sanitizePosition(raw, fallbackName = "Ma position"){
+  const s = defaultPosition(fallbackName);
   if(!raw || typeof raw !== "object") return s;
+  if(typeof raw.id === "string" && /^[\w-]{1,64}$/.test(raw.id)) s.id = raw.id;
+  if(typeof raw.name === "string" && raw.name.trim()) s.name = raw.name.trim().slice(0, 60);
+  if(typeof raw.autoName === "boolean") s.autoName = raw.autoName;
+  if(Number.isFinite(+raw.createdAt)) s.createdAt = +raw.createdAt;
   if(Array.isArray(raw.transactions)){
     s.transactions = raw.transactions
       .filter(t => t && typeof t === "object")
@@ -77,14 +98,6 @@ function sanitize(raw){
   if(Number.isFinite(+raw.feePercent)) s.feePercent = U.clamp(+raw.feePercent, 0, 99);
   if(typeof raw.horizonIso === "string" && Number.isFinite(U.isoToMs(raw.horizonIso))) s.horizonIso = raw.horizonIso;
   if(typeof raw.assetTicker === "string") s.assetTicker = raw.assetTicker.trim().toUpperCase();
-  if(Number.isInteger(+raw.proxyPort) && +raw.proxyPort > 0 && +raw.proxyPort < 65536) s.proxyPort = +raw.proxyPort;
-  if(raw.ui && typeof raw.ui === "object"){
-    if(["auto", "light", "dark"].includes(raw.ui.theme)) s.ui.theme = raw.ui.theme;
-    ["panelCollapsed", "showBands", "showCandles", "showLabels"].forEach(k => {
-      if(typeof raw.ui[k] === "boolean") s.ui[k] = raw.ui[k];
-    });
-    if(raw.ui.collapsed && typeof raw.ui.collapsed === "object") s.ui.collapsed = Object.assign({}, raw.ui.collapsed);
-  }
   const v = raw.view;
   if(v && [v.start, v.end].every(Number.isFinite) && v.end > v.start){
     s.view = { start: v.start, end: v.end };
@@ -93,154 +106,419 @@ function sanitize(raw){
   return s;
 }
 
-function readJson(key){
-  try{
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : null;
-  }catch(e){ return null; }
+function sanitizeGlobal(raw){
+  const g = { proxyPort: 8765, ui: defaultUi() };
+  if(!raw || typeof raw !== "object") return g;
+  if(Number.isInteger(+raw.proxyPort) && +raw.proxyPort > 0 && +raw.proxyPort < 65536) g.proxyPort = +raw.proxyPort;
+  const ui = raw.ui;
+  if(ui && typeof ui === "object"){
+    if(["auto", "light", "dark"].includes(ui.theme)) g.ui.theme = ui.theme;
+    ["panelCollapsed", "showBands", "showCandles", "showLabels"].forEach(k => {
+      if(typeof ui[k] === "boolean") g.ui[k] = ui[k];
+    });
+    if(ui.collapsed && typeof ui.collapsed === "object") g.ui.collapsed = Object.assign({}, ui.collapsed);
+  }
+  return g;
 }
 
-// Conversion de l'état IRRViz v1 vers le format v2.
-function fromV1(v1){
+// Format persisté : { version: 2, activeId, positions: [...], proxyPort, ui }
+function sanitizeApp(raw){
+  const g = sanitizeGlobal(raw);
+  const list = raw && Array.isArray(raw.positions) ? raw.positions : [];
+  const positions = [];
+  const ids = new Set();
+  list.forEach((p, i) => {
+    const pos = sanitizePosition(p, `Position ${i + 1}`);
+    if(ids.has(pos.id)) pos.id = U.makeId("p");
+    ids.add(pos.id);
+    positions.push(pos);
+  });
+  if(!positions.length) return null;
+  const activeId = raw && ids.has(raw.activeId) ? raw.activeId : positions[0].id;
+  return { version: 2, activeId, positions, proxyPort: g.proxyPort, ui: g.ui };
+}
+
+// Nom initial d'une position reprise d'un ancien format : son symbole s'il existe.
+function migratedPosition(raw){
+  const pos = sanitizePosition(raw, "Ma position");
+  if(pos.assetTicker && (!raw || !raw.name)) pos.name = pos.assetTicker;
+  return pos;
+}
+
+/* Reprise de l'état IRRViz 2 mono-position (clé irrviz2-state-v1). Renvoie
+   { app, prices } où `prices` est le cache de cours à rattacher à la position. */
+function migrateLegacy(legacy, legacyCandles){
+  if(!legacy || typeof legacy !== "object" || !Array.isArray(legacy.transactions)) return null;
+  const pos = migratedPosition(legacy);
+  const g = sanitizeGlobal(legacy);
+  const app = { version: 2, activeId: pos.id, positions: [pos], proxyPort: g.proxyPort, ui: g.ui };
+  let prices = null;
+  if(legacyCandles && legacyCandles.ticker && legacyCandles.ticker === pos.assetTicker && Array.isArray(legacyCandles.rows)){
+    prices = Object.assign({ source: "yahoo" }, legacyCandles);
+  }
+  return { app, prices };
+}
+
+// Reprise de l'état IRRViz v1 (clé mwviz-state-v1).
+function migrateV1(v1){
   if(!v1 || !Array.isArray(v1.transactions)) return null;
-  const s = sanitize({
+  const pos = migratedPosition({
     transactions: v1.transactions,
     thresholds: v1.thresholds,
     feePercent: v1.feePercent,
     horizonIso: v1.horizonIso,
     assetTicker: v1.assetTicker,
   });
-  return s.transactions.length ? s : null;
+  if(!pos.transactions.length) return null;
+  const g = sanitizeGlobal(null);
+  return { version: 2, activeId: pos.id, positions: [pos], proxyPort: g.proxyPort, ui: g.ui };
 }
+
+function readJson(key){
+  try{
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
+function writeJson(key, value){
+  try{ localStorage.setItem(key, JSON.stringify(value)); return true; }
+  catch(e){ return false; }
+}
+function removeKey(key){
+  try{ localStorage.removeItem(key); }catch(e){ /* ignore */ }
+}
+
+function loadSampleInto(pos){
+  pos.transactions = SAMPLE_TRANSACTIONS.map(t => Object.assign({ id: U.makeId() }, t));
+  pos.thresholds = DEFAULT_THRESHOLDS.slice();
+  pos.hiddenThresholds = [];
+  pos.feePercent = 0.35;
+  pos.horizonIso = null;
+  pos.view = null;
+}
+
+/* ---------------------------------------------------------------------
+   Store
+   --------------------------------------------------------------------- */
 
 function createStore(){
   const listeners = new Set();
-  let state = defaultState();
-  let undoStack = [], redoStack = [];
-  let lastCheckpoint = { key: null, at: 0 };
-  let origin = "fresh"; // fresh | saved | v1
+  let app = null;
+  let origin = "saved"; // fresh | saved | legacy | v1
+  const history = new Map(); // id de position -> { undo, redo, last }
 
-  const saved = readJson(STORAGE_KEY);
-  if(saved){
-    state = sanitize(saved);
-    origin = "saved";
-  } else {
-    const migrated = fromV1(readJson(V1_STORAGE_KEY));
-    if(migrated){ state = migrated; origin = "v1"; }
+  app = sanitizeApp(readJson(STORAGE_KEY));
+  if(!app){
+    const legacy = migrateLegacy(readJson(LEGACY_KEY), readJson(LEGACY_CANDLES_KEY));
+    if(legacy){
+      app = legacy.app;
+      origin = "legacy";
+      if(legacy.prices) writeJson(PRICES_PREFIX + app.activeId, legacy.prices);
+    } else {
+      app = migrateV1(readJson(V1_STORAGE_KEY));
+      if(app) origin = "v1";
+    }
   }
-  if(origin === "fresh") loadSampleInto(state);
-
-  function loadSampleInto(s){
-    s.transactions = SAMPLE_TRANSACTIONS.map(t => Object.assign({ id: U.makeId() }, t));
-    s.thresholds = DEFAULT_THRESHOLDS.slice();
-    s.hiddenThresholds = [];
-    s.feePercent = 0.35;
-    s.horizonIso = null;
-    s.view = null;
+  if(!app){
+    const pos = defaultPosition("Exemple");
+    loadSampleInto(pos);
+    app = { version: 2, activeId: pos.id, positions: [pos], proxyPort: 8765, ui: defaultUi() };
+    origin = "fresh";
   }
 
-  const persist = () => {
-    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){ /* quota / navigation privée */ }
+  const active = () => app.positions.find(p => p.id === app.activeId) || app.positions[0];
+  const globalView = {
+    get ui(){ return app.ui; },
+    get proxyPort(){ return app.proxyPort; },
+    set proxyPort(v){ app.proxyPort = v; },
   };
-  const persistSoon = U.debounce(persist, 250);
 
-  function emit(kind){ listeners.forEach(fn => fn(kind, state)); }
+  function hist(id = app.activeId){
+    if(!history.has(id)) history.set(id, { undo: [], redo: [], last: { key: null, at: 0 } });
+    return history.get(id);
+  }
+
+  const persist = () => { writeJson(STORAGE_KEY, app); };
+  const persistSoon = U.debounce(persist, 250);
+  if(origin !== "saved") persist();
+
+  function emit(kind){ listeners.forEach(fn => fn(kind)); }
 
   /* Enregistre un point d'annulation AVANT une modification. Les modifications
      successives portant la même `key` en moins de 1,5 s (frappe dans un champ)
      sont regroupées en une seule étape d'annulation. */
   function checkpoint(key){
+    const h = hist();
     const now = Date.now();
-    if(key && key === lastCheckpoint.key && now - lastCheckpoint.at < 1500){
-      lastCheckpoint.at = now;
+    if(key && key === h.last.key && now - h.last.at < 1500){
+      h.last.at = now;
       return;
     }
-    undoStack.push(snapshot(state));
-    if(undoStack.length > UNDO_LIMIT) undoStack.shift();
-    redoStack = [];
-    lastCheckpoint = { key, at: now };
+    h.undo.push(snapshot(active()));
+    if(h.undo.length > UNDO_LIMIT) h.undo.shift();
+    h.redo = [];
+    h.last = { key, at: now };
   }
 
   function restore(snap){
     const o = JSON.parse(snap);
-    DATA_KEYS.forEach(k => { state[k] = o[k]; });
+    const pos = active();
+    DATA_KEYS.forEach(k => { pos[k] = o[k]; });
+  }
+
+  function uniqueName(base){
+    const names = new Set(app.positions.map(p => p.name));
+    if(!names.has(base)) return base;
+    for(let i = 2; ; i++){ const n = `${base} (${i})`; if(!names.has(n)) return n; }
+  }
+
+  function nextDefaultName(){
+    for(let i = app.positions.length + 1; ; i++){
+      const n = `Position ${i}`;
+      if(!app.positions.some(p => p.name === n)) return n;
+    }
+  }
+
+  function insertPosition(pos, index = app.positions.length){
+    app.positions.splice(index, 0, pos);
+    app.activeId = pos.id;
+    persist();
+    emit("switch");
+    return pos.id;
   }
 
   return {
-    get state(){ return state; },
+    get state(){ return active(); },
+    get global(){ return globalView; },
+    get positions(){ return app.positions; },
+    get activeId(){ return app.activeId; },
     get origin(){ return origin; },
     subscribe(fn){ listeners.add(fn); return () => listeners.delete(fn); },
 
-    /* Applique une modification métier. kind : "data" (rendu complet) | "soft"
-       (valeurs éditées en place : pas de reconstruction des listes). */
+    /* Applique une modification métier à la position active. kind : "data" (rendu
+       complet) | "soft" (valeurs éditées en place : pas de reconstruction des listes). */
     update(mutator, { key = null, kind = "data", undoable = true } = {}){
       if(undoable) checkpoint(key);
-      mutator(state);
+      mutator(active());
       persistSoon();
       emit(kind);
     },
 
-    // Préférences d'affichage / vue : persistées, mais hors annuler/rétablir.
+    // Préférences d'affichage communes : persistées, mais hors annuler/rétablir.
     setUi(mutator, kind = "ui"){
-      mutator(state);
+      mutator(globalView);
       persistSoon();
       emit(kind);
     },
 
     setView(view){
-      state.view = view;
+      active().view = view;
       persistSoon();
     },
 
     undo(){
-      if(!undoStack.length) return false;
-      redoStack.push(snapshot(state));
-      restore(undoStack.pop());
-      lastCheckpoint = { key: null, at: 0 };
+      const h = hist();
+      if(!h.undo.length) return false;
+      h.redo.push(snapshot(active()));
+      restore(h.undo.pop());
+      h.last = { key: null, at: 0 };
       persistSoon();
       emit("reset");
       return true;
     },
     redo(){
-      if(!redoStack.length) return false;
-      undoStack.push(snapshot(state));
-      restore(redoStack.pop());
-      lastCheckpoint = { key: null, at: 0 };
+      const h = hist();
+      if(!h.redo.length) return false;
+      h.undo.push(snapshot(active()));
+      restore(h.redo.pop());
+      h.last = { key: null, at: 0 };
       persistSoon();
       emit("reset");
       return true;
     },
-    canUndo(){ return undoStack.length > 0; },
-    canRedo(){ return redoStack.length > 0; },
+    canUndo(){ return hist().undo.length > 0; },
+    canRedo(){ return hist().redo.length > 0; },
 
     loadSample(){
       checkpoint(null);
-      loadSampleInto(state);
+      loadSampleInto(active());
       persistSoon();
       emit("reset");
     },
 
-    // Remplace l'état métier par une sauvegarde JSON (annulable).
-    replaceFromBackup(raw){
-      const s = sanitize(raw && raw.state ? raw.state : raw);
-      checkpoint(null);
-      DATA_KEYS.forEach(k => { state[k] = s[k]; });
-      state.view = null;
-      persistSoon();
-      emit("reset");
-      return s.transactions.length;
+    /* ---------------- Gestion des positions ---------------- */
+
+    switchTo(id){
+      if(id === app.activeId || !app.positions.some(p => p.id === id)) return false;
+      persistSoon.flush();
+      app.activeId = id;
+      persist();
+      emit("switch");
+      return true;
     },
+
+    // Crée une position vide ; `copySettingsFrom` reprend seuils, frais et horizon d'une autre.
+    createPosition({ name, copySettingsFrom = null } = {}){
+      const trimmed = (name || "").trim();
+      const pos = defaultPosition(uniqueName(trimmed || nextDefaultName()));
+      pos.autoName = !trimmed;
+      const src = copySettingsFrom && app.positions.find(p => p.id === copySettingsFrom);
+      if(src){
+        pos.thresholds = src.thresholds.slice();
+        pos.hiddenThresholds = src.hiddenThresholds.slice();
+        pos.feePercent = src.feePercent;
+        pos.horizonIso = src.horizonIso;
+      }
+      const index = app.positions.findIndex(p => p.id === app.activeId) + 1;
+      return insertPosition(pos, index);
+    },
+
+    duplicatePosition(id = app.activeId){
+      const src = app.positions.find(p => p.id === id);
+      if(!src) return null;
+      const copy = sanitizePosition(JSON.parse(JSON.stringify(src)));
+      copy.id = U.makeId("p");
+      copy.name = uniqueName(`${src.name} (copie)`);
+      copy.autoName = false;
+      copy.createdAt = Date.now();
+      copy.transactions.forEach(t => { t.id = U.makeId(); });
+      const prices = readJson(PRICES_PREFIX + src.id);
+      if(prices) writeJson(PRICES_PREFIX + copy.id, prices);
+      return insertPosition(copy, app.positions.indexOf(src) + 1);
+    },
+
+    renamePosition(id, name){
+      const pos = app.positions.find(p => p.id === id);
+      const trimmed = (name || "").trim().slice(0, 60);
+      if(!pos || !trimmed || trimmed === pos.name) return false;
+      pos.name = trimmed;
+      pos.autoName = false;
+      persistSoon();
+      emit("positions");
+      return true;
+    },
+
+    // Renommage automatique (symbole chargé) tant que l'utilisateur n'a pas choisi de nom.
+    autoNamePosition(id, name){
+      const pos = app.positions.find(p => p.id === id);
+      if(!pos || !pos.autoName || !name || pos.name === name) return;
+      pos.name = uniqueName(name);
+      persistSoon();
+      emit("positions");
+    },
+
+    /* Supprime une position. Renvoie un jeton permettant de l'annuler avec
+       restorePosition (la dernière position restante ne peut pas être supprimée,
+       elle est vidée à la place). */
+    deletePosition(id = app.activeId){
+      const index = app.positions.findIndex(p => p.id === id);
+      if(index < 0) return null;
+      const pos = app.positions[index];
+      const token = {
+        pos: JSON.parse(JSON.stringify(pos)),
+        index,
+        wasActive: id === app.activeId,
+        prices: readJson(PRICES_PREFIX + id),
+        history: history.get(id) || null,
+      };
+      app.positions.splice(index, 1);
+      history.delete(id);
+      removeKey(PRICES_PREFIX + id);
+      if(!app.positions.length){
+        const fresh = defaultPosition("Ma position");
+        app.positions.push(fresh);
+      }
+      if(token.wasActive) app.activeId = app.positions[Math.min(index, app.positions.length - 1)].id;
+      persist();
+      emit(token.wasActive ? "switch" : "positions");
+      return token;
+    },
+
+    restorePosition(token){
+      if(!token || app.positions.some(p => p.id === token.pos.id)) return;
+      // Si la position supprimée était la seule, on retire la position vide créée à sa place.
+      if(app.positions.length === 1 && !app.positions[0].transactions.length && app.positions[0].autoName){
+        app.positions = [];
+      }
+      if(token.prices) writeJson(PRICES_PREFIX + token.pos.id, token.prices);
+      if(token.history) history.set(token.pos.id, token.history);
+      const pos = sanitizePosition(token.pos);
+      app.positions.splice(Math.min(token.index, app.positions.length), 0, pos);
+      if(token.wasActive || !app.positions.some(p => p.id === app.activeId)) app.activeId = pos.id;
+      persist();
+      emit("switch");
+    },
+
+    movePosition(id, delta){
+      const i = app.positions.findIndex(p => p.id === id);
+      const j = i + delta;
+      if(i < 0 || j < 0 || j >= app.positions.length) return;
+      const [pos] = app.positions.splice(i, 1);
+      app.positions.splice(j, 0, pos);
+      persistSoon();
+      emit("positions");
+    },
+
+    /* ---------------- Sauvegarde / restauration ---------------- */
 
     backup(){
-      return { app: "IRRViz2", version: 1, exportedAt: new Date().toISOString(), state: JSON.parse(JSON.stringify(state)) };
+      persistSoon.flush();
+      const prices = {};
+      app.positions.forEach(p => { const c = readJson(PRICES_PREFIX + p.id); if(c) prices[p.id] = c; });
+      return {
+        app: "IRRViz2", version: 2, exportedAt: new Date().toISOString(),
+        state: JSON.parse(JSON.stringify(app)),
+        prices,
+      };
+    },
+
+    /* Restaure une sauvegarde :
+       - sauvegarde complète (version 2) : remplace toutes les positions ;
+       - sauvegarde mono-position (IRRViz 2 avant les positions) : ajoutée comme nouvelle position.
+       Renvoie { mode, count, undo } où `undo()` annule la restauration. */
+    restoreBackup(raw){
+      const data = raw && raw.state ? raw.state : raw;
+      const full = sanitizeApp(data);
+      if(full && data && Array.isArray(data.positions)){
+        const previous = { app: JSON.parse(JSON.stringify(app)), prices: {} };
+        app.positions.forEach(p => { previous.prices[p.id] = readJson(PRICES_PREFIX + p.id); removeKey(PRICES_PREFIX + p.id); });
+        app = full;
+        history.clear();
+        if(raw.prices && typeof raw.prices === "object"){
+          app.positions.forEach(p => { if(raw.prices[p.id]) writeJson(PRICES_PREFIX + p.id, raw.prices[p.id]); });
+        }
+        persist();
+        emit("switch");
+        return {
+          mode: "all",
+          count: app.positions.length,
+          undo: () => {
+            app.positions.forEach(p => removeKey(PRICES_PREFIX + p.id));
+            app = previous.app;
+            Object.entries(previous.prices).forEach(([id, c]) => { if(c) writeJson(PRICES_PREFIX + id, c); });
+            history.clear();
+            persist();
+            emit("switch");
+          },
+        };
+      }
+      if(!data || !Array.isArray(data.transactions)) throw new Error("Sauvegarde non reconnue");
+      const pos = migratedPosition(data);
+      pos.id = U.makeId("p");
+      pos.name = uniqueName(pos.name);
+      pos.view = null;
+      const id = insertPosition(pos);
+      const self = this;
+      return { mode: "position", count: 1, undo: () => self.deletePosition(id) };
     },
 
     flush(){ persistSoon.flush(); },
 
-    /* Cache des bougies (dernier téléchargement réussi), pour un affichage immédiat
-       au chargement et un mode dégradé quand le proxy est indisponible. */
-    readCandleCache(ticker){
-      const c = readJson(CANDLES_KEY);
+    /* Cache des cours de la position (dernier téléchargement réussi), pour un
+       affichage immédiat au chargement et un mode dégradé sans proxy.
+       Format : { source: "yahoo", ticker, currency, fetchedAt, rows: [[s, o, h, l, c], …] } */
+    readCandleCache(ticker, posId = app.activeId){
+      const c = readJson(PRICES_PREFIX + posId);
       if(!c || c.ticker !== ticker || !Array.isArray(c.rows)) return null;
       return {
         fetchedAt: c.fetchedAt,
@@ -248,19 +526,20 @@ function createStore(){
         candles: c.rows.map(r => ({ ms: r[0] * 1000, open: r[1], high: r[2], low: r[3], close: r[4] })),
       };
     },
-    writeCandleCache(ticker, candles, currency){
+    writeCandleCache(ticker, candles, currency, posId = app.activeId){
+      if(!app.positions.some(p => p.id === posId)) return;
       const round = v => Math.round(v * 1e4) / 1e4;
       const rows = candles.map(c => [Math.round(c.ms / 1000), round(c.open), round(c.high), round(c.low), round(c.close)]);
-      try{
-        localStorage.setItem(CANDLES_KEY, JSON.stringify({ ticker, currency, fetchedAt: Date.now(), rows }));
-      }catch(e){ /* cache facultatif */ }
+      writeJson(PRICES_PREFIX + posId, { source: "yahoo", ticker, currency, fetchedAt: Date.now(), rows });
     },
-    clearCandleCache(){
-      try{ localStorage.removeItem(CANDLES_KEY); }catch(e){ /* ignore */ }
+    clearCandleCache(posId = app.activeId){
+      removeKey(PRICES_PREFIX + posId);
     },
   };
 }
 
-IRR.store = { createStore, DEFAULT_THRESHOLDS, sanitize };
+IRR.store = { createStore, DEFAULT_THRESHOLDS, sanitizePosition, sanitizeApp, migrateLegacy, migrateV1, STORAGE_KEY };
+
+if(typeof module !== "undefined" && module.exports) module.exports = IRR.store;
 
 })(typeof window !== "undefined" ? window : globalThis);

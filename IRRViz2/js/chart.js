@@ -133,7 +133,11 @@ IRR.createChart = function createChart({ wrap, svg, tooltip, onSelectTx, onViewC
     return v;
   }
 
+  // Remplace la vue courante par `v` (null = vue automatique), ex. au changement de position.
   function restoreView(v){
+    view = null; userZoomed = false; yView = null;
+    hideHover();
+    requestRender();
     if(!v) return;
     if(Number.isFinite(v.start) && Number.isFinite(v.end)){ view = { start: v.start, end: v.end }; userZoomed = true; }
     if(Number.isFinite(v.yMin) && Number.isFinite(v.yMax)) yView = { min: v.yMin, max: v.yMax };
