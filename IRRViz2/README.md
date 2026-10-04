@@ -4,6 +4,18 @@ Seconde version d'[IRRViz](../IRRViz/) : à partir de vos transactions, visualis
 
 Même stack que la v1 : site **100 % statique** (HTML, CSS, JavaScript sans dépendance ni étape de build), persistance dans le **localStorage** du navigateur. Ouvrez simplement `index.html`, ou servez le dossier avec n'importe quel serveur statique.
 
+## Application installable et hors ligne
+
+IRRViz 2 est une **application web progressive (PWA)** : servie en `https://` (ou depuis `localhost`), elle peut être installée et fonctionne ensuite **sans connexion**.
+
+- **Installer** : bouton « Installer » dans la barre du haut (Chrome, Edge — ordinateur et Android), menu Partager › *Sur l'écran d'accueil* (Safari iPhone / iPad), menu Fichier › *Ajouter au Dock* (Safari Mac). L'application s'ouvre alors dans sa propre fenêtre, avec son icône.
+- **Hors ligne** : tout fonctionne (saisie, graphique, import / export, cours importés ou en cache) ; seul le téléchargement des cours Yahoo demande une connexion. Un badge « Hors ligne » l'indique, et les cours Yahoo en cache sont rafraîchis au retour de la connexion.
+- **Mises à jour** : le service worker (`sw.js`) charge les fichiers depuis le réseau en priorité et ne sert le cache que hors ligne ou si le réseau ne répond pas en 4 s. Une nouvelle version publiée est donc visible dès le rechargement suivant, sans mélange d'anciens et de nouveaux fichiers.
+- Les données restent dans le `localStorage` du navigateur. Sur iPhone / iPad, l'application installée a **son propre stockage**, séparé de Safari : exportez une sauvegarde JSON depuis Safari puis restaurez-la dans l'application.
+- Ouverte directement depuis le disque (`file://`), l'application fonctionne comme avant, mais sans installation ni mode hors ligne (les navigateurs n'autorisent pas les service workers dans ce cas).
+
+Pour les développeurs : la liste des fichiers mis en cache est `APP_SHELL` dans `sw.js`. Un test vérifie qu'elle contient tout ce que charge `index.html` ; incrémentez `VERSION` quand vous ajoutez, renommez ou supprimez un fichier, pour purger l'ancien cache.
+
 ## Plusieurs positions
 
 Le menu **Positions** (en haut à gauche) permet de suivre plusieurs actifs. Chaque position a ses propres transactions, seuils, frais, horizon, symbole Yahoo, vue du graphique, historique annuler / rétablir et cache de cours. Le thème, l'affichage du panneau et le port du proxy sont communs.
@@ -123,8 +135,10 @@ IRRViz2/
 │   ├── asset.js   cours Yahoo Finance via le proxy
 │   ├── chart.js   graphique SVG interactif
 │   └── app.js     interface
+├── manifest.webmanifest, sw.js   application installable, hors ligne
+├── icons/                        icônes de l'application (SVG + PNG)
 ├── proxy.py
-└── tests/         model.test.js, store.test.js, prices.test.js
+└── tests/         model.test.js, store.test.js, prices.test.js, pwa.test.js
 ```
 
 Les scripts sont des scripts classiques (pas de modules ES) pour que l'application fonctionne aussi ouverte directement depuis le disque (`file://`).

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="25%" cy="0%" r="110%">
+      <stop offset="0" stop-color="#1b2638"/>
+      <stop offset="1" stop-color="#0b0e14"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <!-- Logo réduit dans la zone sûre (cercle de 80 %) des icônes adaptatives -->
+  <g fill="none" stroke-linecap="round" stroke-width="28" transform="translate(256 256) scale(0.66) translate(-256 -256)">
+    <path d="M86 410 C190 380 262 280 430 108" stroke="#6fcf5a"/>
+    <path d="M86 410 C202 396 290 330 430 236" stroke="#f0b429"/>
+    <path d="M86 410 C214 410 316 388 430 352" stroke="#dd6a2e"/>
+  </g>
+</svg>

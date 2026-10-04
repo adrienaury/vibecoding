@@ -8,6 +8,12 @@
 <meta name="color-scheme" content="dark light" />
 <meta name="theme-color" content="#0b0e14" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0e14'/%3E%3Cpath d='M5 25 C11 23 15 17 27 7' stroke='%236fcf5a' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M5 25 C12 24 17 20 27 15' stroke='%23f0b429' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M5 25 C13 25 19 23 27 22' stroke='%23dd6a2e' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="IRRViz" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <link rel="stylesheet" href="css/style.css" />
 <script>
   /* Applique le thème avant le premier rendu pour éviter un flash de couleurs. */
@@ -106,6 +112,8 @@
           <button role="menuitem" data-action="clear" class="danger"><svg class="ic"><use href="#i-trash"/></svg>Effacer les transactions de la position</button>
         </div>
       </div>
+      <span class="offline-badge" id="offlineBadge" role="status" title="Pas de connexion : l'application fonctionne normalement, seuls les cours Yahoo ne peuvent pas être téléchargés." hidden><span class="dot"></span>Hors ligne</span>
+      <button class="btn small install-btn" id="btnInstall" title="Installer IRRViz comme une application (fenêtre dédiée, utilisable hors ligne)" hidden><svg class="ic"><use href="#i-download"/></svg><span class="hide-sm">Installer</span></button>
       <button class="icon-btn" id="btnTheme" title="Thème" aria-label="Changer de thème"><svg class="ic"><use href="#i-auto"/></svg></button>
       <button class="icon-btn" id="btnHelp" title="Aide et raccourcis (?)" aria-label="Aide"><svg class="ic"><use href="#i-help"/></svg></button>
     </div>
@@ -328,6 +336,13 @@
         <li>Les zones hachurées correspondent aux périodes où la position est soldée.</li>
         <li>Pas de symbole Yahoo pour votre actif (fonds, SCPI, non coté) ? Dans <b>Cours de l'actif › Fichier CSV</b>, importez son historique de cours : aucun proxy n'est nécessaire.</li>
         <li>Suivez plusieurs actifs avec le menu <b>Positions</b> (en haut à gauche) : chacune a ses propres transactions, seuils, frais, horizon et cours.</li>
+      </ul>
+      <h3>Installer l'application</h3>
+      <p>Une fois installé, IRRViz s'ouvre dans sa propre fenêtre et <b>fonctionne hors ligne</b> : seul le téléchargement des cours Yahoo demande une connexion. Vos données restent stockées dans ce navigateur.</p>
+      <ul>
+        <li><b>Chrome, Edge</b> (ordinateur, Android) : bouton <b>Installer</b> en haut de la page, ou menu du navigateur › <i>Installer IRRViz</i>.</li>
+        <li><b>Safari sur iPhone / iPad</b> : bouton Partager › <i>Sur l'écran d'accueil</i>. L'application installée y dispose de son propre stockage : exportez une sauvegarde JSON depuis Safari (menu Données) puis restaurez-la dans l'application.</li>
+        <li><b>Safari sur Mac</b> : menu Fichier › <i>Ajouter au Dock</i>.</li>
       </ul>
       <h3>Raccourcis clavier</h3>
       <div class="shortcuts">

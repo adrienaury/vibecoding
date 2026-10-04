@@ -37,6 +37,11 @@
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
   --panel-w: 360px;
   --topbar-h: 58px;
+  /* Zones sûres (encoche, barre d'accueil) quand l'application installée occupe tout l'écran. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
   color-scheme: dark;
   font-size: 15px;
 }
@@ -220,9 +225,9 @@ input[type="date"]::-webkit-calendar-picker-indicator{ cursor: pointer; opacity:
    --------------------------------------------------------------------- */
 
 .topbar{
-  height: var(--topbar-h); flex: 0 0 auto;
+  height: calc(var(--topbar-h) + var(--safe-top)); flex: 0 0 auto;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 0 14px 0 10px;
+  padding: var(--safe-top) calc(14px + var(--safe-right)) 0 calc(10px + var(--safe-left));
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 70%, transparent);
   backdrop-filter: blur(8px);
@@ -230,6 +235,20 @@ input[type="date"]::-webkit-calendar-picker-indicator{ cursor: pointer; opacity:
 }
 .topbar-left{ display: flex; align-items: center; gap: 6px; min-width: 0; }
 .topbar-actions{ display: flex; align-items: center; gap: 8px; }
+.install-btn[hidden], .offline-badge[hidden]{ display: none; }
+.install-btn{ border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent); }
+.offline-badge{
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+}
+.offline-badge .dot{ width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+
+/* Application installée : le lien vers la v1 sortirait de l'application. */
+@media (display-mode: standalone){
+  .panel-foot a{ display: none; }
+}
 .brand{ display: flex; align-items: center; gap: 10px; color: inherit; text-decoration: none; min-width: 0; padding: 4px 6px; border-radius: 8px; }
 .brand-mark{ width: 30px; height: 30px; flex: 0 0 auto; }
 .brand-mark path, .empty-art path{ fill: none; stroke-width: 2.6; stroke-linecap: round; }
@@ -685,7 +704,7 @@ button.litem:hover{ background: var(--surface-3); color: var(--text); }
    --------------------------------------------------------------------- */
 
 .toasts{
-  position: fixed; z-index: 100; right: 18px; bottom: 18px;
+  position: fixed; z-index: 100; right: calc(18px + var(--safe-right)); bottom: calc(18px + var(--safe-bottom));
   display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
   pointer-events: none; width: max-content; max-width: calc(100vw - 24px);
 }
@@ -724,14 +743,15 @@ button.litem:hover{ background: var(--surface-3); color: var(--text); }
 @media (max-width: 900px){
   :root{ --panel-w: min(380px, 92vw); --topbar-h: 54px; }
   .panel{
-    position: fixed; z-index: 30; top: var(--topbar-h); bottom: 0; left: 0;
+    position: fixed; z-index: 30; top: calc(var(--topbar-h) + var(--safe-top)); bottom: 0; left: 0;
+    padding-left: calc(14px + var(--safe-left)); padding-bottom: calc(14px + var(--safe-bottom));
     background: var(--bg); box-shadow: var(--shadow);
     transform: translateX(-102%); transition: transform .24s ease;
   }
   body.drawer-open .panel{ transform: none; }
-  .backdrop{ display: block; position: fixed; inset: var(--topbar-h) 0 0 0; z-index: 25; background: rgba(5, 8, 14, .45); }
+  .backdrop{ display: block; position: fixed; inset: calc(var(--topbar-h) + var(--safe-top)) 0 0 0; z-index: 25; background: rgba(5, 8, 14, .45); }
   .backdrop[hidden]{ display: none; }
-  .main{ padding: 10px; gap: 10px; }
+  .main{ padding: 10px calc(10px + var(--safe-right)) calc(10px + var(--safe-bottom)) calc(10px + var(--safe-left)); gap: 10px; }
   .kpis{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .kpi{ padding: 9px 11px; }
   .kpi-value{ font-size: 18px; }
@@ -754,7 +774,7 @@ button.litem:hover{ background: var(--surface-3); color: var(--text); }
   .pos-menu{ margin-left: 0; }
   .pos-btn{ max-width: 46vw; padding: 0 8px; gap: 6px; }
   .pos-btn > .ic:first-child{ display: none; }
-  .pos-list{ position: fixed; left: 8px; right: 8px; top: calc(var(--topbar-h) + 4px); min-width: 0; max-width: none; }
+  .pos-list{ position: fixed; left: 8px; right: 8px; top: calc(var(--topbar-h) + var(--safe-top) + 4px); min-width: 0; max-width: none; }
   .pos-move{ opacity: 1; }
   #btnDataMenu{ padding: 0 9px; }
   .chart-actions{ width: 100%; justify-content: space-between; }
@@ -762,8 +782,10 @@ button.litem:hover{ background: var(--surface-3); color: var(--text); }
   .kpi-sub{ font-size: 10.5px; }
   .kpi .kpi-sub{ -webkit-line-clamp: 2; }
   .shortcuts{ grid-template-columns: 1fr; }
-  .toasts{ left: 10px; right: 10px; bottom: 10px; align-items: stretch; }
-  .menu-list{ position: fixed; left: 8px; right: 8px; top: calc(var(--topbar-h) + 4px); min-width: 0; }
+  .toasts{ left: 10px; right: 10px; bottom: calc(10px + var(--safe-bottom)); align-items: stretch; }
+  .menu-list{ position: fixed; left: 8px; right: 8px; top: calc(var(--topbar-h) + var(--safe-top) + 4px); min-width: 0; }
+  .offline-badge{ padding: 0 7px; font-size: 0; gap: 0; }
+  .offline-badge .dot{ width: 9px; height: 9px; }
 }
 
 @media (prefers-reduced-motion: reduce){
