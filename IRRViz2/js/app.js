@@ -8,7 +8,8 @@
 const U = IRR.util, M = IRR.model, CSV = IRR.csv;
 const { DAY } = U;
 const store = IRR.store.createStore();
-const S = () => store.state;
+const S = () => store.state;   // position active
+const G = () => store.global;  // préférences communes (thème, panneau, proxy)
 const $ = id => document.getElementById(id);
 
 const el = {
@@ -16,6 +17,10 @@ const el = {
   panel: $("sidePanel"), backdrop: $("backdrop"), btnPanel: $("btnPanel"),
   btnUndo: $("btnUndo"), btnRedo: $("btnRedo"),
   dataMenu: $("dataMenu"), btnDataMenu: $("btnDataMenu"),
+  posMenu: $("posMenu"), btnPosMenu: $("btnPosMenu"), posName: $("posName"), posSub: $("posSub"), posItems: $("posItems"),
+  posDialog: $("posDialog"), posForm: $("posForm"), posDialogTitle: $("posDialogTitle"), posNameInput: $("posNameInput"),
+  posCopyRow: $("posCopyRow"), posCopySettings: $("posCopySettings"), posCopyFrom: $("posCopyFrom"),
+  posDialogHint: $("posDialogHint"), posDialogOk: $("posDialogOk"),
   btnTheme: $("btnTheme"), btnHelp: $("btnHelp"),
   txList: $("txList"), txCount: $("txCount"), btnAddTx: $("btnAddTx"), btnImportOpen: $("btnImportOpen"),
   chips: $("thresholdChips"), thresholdForm: $("thresholdForm"), newThreshold: $("newThreshold"), btnResetThresholds: $("btnResetThresholds"),
@@ -78,19 +83,24 @@ function toast(message, { type = "info", action = null, timeout = 5000 } = {}){
   }
 }
 
-const undoAction = { label: "Annuler", fn: () => store.undo() };
+// Action « Annuler » d'une notification : elle s'applique à la position concernée,
+// même si l'utilisateur a changé de position entre-temps.
+function undoAction(){
+  const id = store.activeId;
+  return { label: "Annuler", fn: () => { if(store.activeId !== id) store.switchTo(id); store.undo(); } };
+}
 
 /* =====================================================================
    Thème
    ===================================================================== */
 
 function effectiveTheme(){
-  const t = S().ui.theme;
+  const t = G().ui.theme;
   return t === "auto" ? (mqLight.matches ? "light" : "dark") : t;
 }
 
 function applyTheme(){
-  const t = S().ui.theme;
+  const t = G().ui.theme;
   if(t === "auto") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", t);
   const icon = { auto: "#i-auto", light: "#i-sun", dark: "#i-moon" }[t];
@@ -103,7 +113,7 @@ function applyTheme(){
 
 function cycleTheme(){
   const order = ["auto", "light", "dark"];
-  const next = order[(order.indexOf(S().ui.theme) + 1) % order.length];
+  const next = order[(order.indexOf(G().ui.theme) + 1) % order.length];
   store.setUi(s => { s.ui.theme = next; });
   applyTheme();
   toast(`Thème ${{ auto: "automatique", light: "clair", dark: "sombre" }[next]}`, { timeout: 1600 });
@@ -124,13 +134,13 @@ function togglePanel(){
 }
 
 function applyPanelState(){
-  el.layout.classList.toggle("panel-collapsed", !mqMobile.matches && S().ui.panelCollapsed);
-  el.btnPanel.setAttribute("aria-expanded", String(mqMobile.matches ? document.body.classList.contains("drawer-open") : !S().ui.panelCollapsed));
+  el.layout.classList.toggle("panel-collapsed", !mqMobile.matches && G().ui.panelCollapsed);
+  el.btnPanel.setAttribute("aria-expanded", String(mqMobile.matches ? document.body.classList.contains("drawer-open") : !G().ui.panelCollapsed));
 }
 
 function ensurePanelVisible(){
   if(mqMobile.matches) setDrawer(true);
-  else if(S().ui.panelCollapsed) store.setUi(s => { s.ui.panelCollapsed = false; });
+  else if(G().ui.panelCollapsed) store.setUi(s => { s.ui.panelCollapsed = false; });
 }
 
 function openCard(name){
@@ -292,7 +302,7 @@ function onTxClick(e){
   const id = btn.closest(".tx-row").dataset.id;
   if(btn.dataset.act === "del"){
     store.update(s => { s.transactions = s.transactions.filter(t => t.id !== id); });
-    toast("Transaction supprimée", { action: undoAction });
+    toast("Transaction supprimée", { action: undoAction() });
   } else if(btn.dataset.act === "dup"){
     const src = S().transactions.find(t => t.id === id);
     const nid = U.makeId();
@@ -371,7 +381,7 @@ function initThresholds(){
         s.thresholds = s.thresholds.filter(x => x !== v);
         s.hiddenThresholds = s.hiddenThresholds.filter(x => x !== v);
       });
-      toast(`Seuil ${U.fmtThreshold(v)} supprimé`, { action: undoAction });
+      toast(`Seuil ${U.fmtThreshold(v)} supprimé`, { action: undoAction() });
     }
   });
   el.chips.addEventListener("change", e => {
@@ -402,7 +412,7 @@ function initThresholds(){
   });
   el.btnResetThresholds.addEventListener("click", () => {
     store.update(s => { s.thresholds = IRR.store.DEFAULT_THRESHOLDS.slice(); s.hiddenThresholds = []; });
-    toast("Seuils par défaut rétablis", { action: undoAction });
+    toast("Seuils par défaut rétablis", { action: undoAction() });
   });
 }
 
@@ -455,9 +465,9 @@ function setProxyDot(ok){
 }
 
 async function checkProxy(verbose){
-  const ok = await IRR.asset.checkProxy(S().proxyPort);
+  const ok = await IRR.asset.checkProxy(G().proxyPort);
   setProxyDot(ok);
-  if(verbose) toast(ok ? `Proxy détecté sur le port ${S().proxyPort}.` : `Aucun proxy sur le port ${S().proxyPort}. Lancez « python proxy.py ».`, { type: ok ? "success" : "error" });
+  if(verbose) toast(ok ? `Proxy détecté sur le port ${G().proxyPort}.` : `Aucun proxy sur le port ${G().proxyPort}. Lancez « python proxy.py ».`, { type: ok ? "success" : "error" });
   return ok;
 }
 
@@ -496,14 +506,21 @@ async function loadAsset(ticker, { silent = false } = {}){
     assetData = cache ? { ticker: sym, candles: cache.candles, currency: cache.currency, fetchedAt: cache.fetchedAt, cached: true } : null;
   }
   const req = ++assetRequest;
+  const posId = store.activeId;
   assetState = { status: "loading", ticker: sym };
   renderAssetStatus(); pushChart(); renderKpis(); renderLegend();
   try{
-    const res = await IRR.asset.fetchCandles({ ticker: sym, port: S().proxyPort, transactions: S().transactions, horizonIso: S().horizonIso });
-    if(req !== assetRequest) return;
+    const res = await IRR.asset.fetchCandles({ ticker: sym, port: G().proxyPort, transactions: S().transactions, horizonIso: S().horizonIso });
     setProxyDot(true);
+    // Le cache et le nom automatique concernent la position qui a lancé la requête,
+    // même si l'utilisateur a changé de position pendant le téléchargement.
+    const owner = store.positions.find(p => p.id === posId);
+    if(owner && owner.assetTicker === sym){
+      store.writeCandleCache(sym, res.candles, res.currency, posId);
+      store.autoNamePosition(posId, sym);
+    }
+    if(req !== assetRequest) return;
     assetData = Object.assign(res, { fetchedAt: Date.now(), cached: false });
-    store.writeCandleCache(sym, res.candles, res.currency);
     assetState = { status: "ok" };
     if(!silent) toast(`${sym} : ${res.candles.length} séances chargées`, { type: "success", timeout: 2500 });
   }catch(err){
@@ -531,13 +548,13 @@ function initAsset(){
     loadAsset(el.tickerInput.value);
   });
   el.btnClearAsset.addEventListener("click", clearAsset);
-  el.proxyPort.value = S().proxyPort;
+  el.proxyPort.value = G().proxyPort;
   el.proxyPort.addEventListener("change", () => {
     const p = parseInt(el.proxyPort.value, 10);
     if(Number.isInteger(p) && p > 0 && p < 65536){
       store.setUi(s => { s.proxyPort = p; }, "none");
       checkProxy(true);
-    } else el.proxyPort.value = S().proxyPort;
+    } else el.proxyPort.value = G().proxyPort;
   });
   el.btnCheckProxy.addEventListener("click", () => checkProxy(true));
   const card = document.querySelector('details.card[data-card="asset"]');
@@ -661,14 +678,14 @@ function renderLegend(){
   items.push(`<span class="litem"><span class="ldot sell"></span>Vente</span>`);
   if(model.points.some(p => !p.quantity)) items.push(`<span class="litem"><span class="ltri"></span>Flux</span>`);
   if(model.points.some(p => p.cumQty === 0)) items.push(`<span class="litem"><span class="lhatch"></span>Soldée</span>`);
-  if(assetData && S().ui.showCandles) items.push(`<span class="litem"><span class="lcandle"></span>${U.escapeHtml(assetData.ticker)}</span>`);
+  if(assetData && G().ui.showCandles) items.push(`<span class="litem"><span class="lcandle"></span>${U.escapeHtml(assetData.ticker)}</span>`);
   el.legend.innerHTML = items.join("");
 }
 
 function renderToggles(){
-  el.tglBands.setAttribute("aria-pressed", String(S().ui.showBands));
-  el.tglLabels.setAttribute("aria-pressed", String(S().ui.showLabels));
-  el.tglCandles.setAttribute("aria-pressed", String(S().ui.showCandles));
+  el.tglBands.setAttribute("aria-pressed", String(G().ui.showBands));
+  el.tglLabels.setAttribute("aria-pressed", String(G().ui.showLabels));
+  el.tglCandles.setAttribute("aria-pressed", String(G().ui.showCandles));
 }
 
 function toggleUi(key){ store.setUi(s => { s.ui[key] = !s.ui[key]; }); }
@@ -692,9 +709,9 @@ function pushChart(){
     candles: assetData ? assetData.candles : null,
     ticker: assetData ? assetData.ticker : "",
     horizonMs: Number.isFinite(horizon) ? horizon : null,
-    showBands: S().ui.showBands,
-    showLabels: S().ui.showLabels,
-    showCandles: S().ui.showCandles,
+    showBands: G().ui.showBands,
+    showLabels: G().ui.showLabels,
+    showCandles: G().ui.showCandles,
     theme: effectiveTheme(),
     highlightId,
   });
@@ -771,7 +788,7 @@ function applyImport(){
   chart.resetView("both");
   el.csvText.value = "";
   importParsed = null;
-  toast(`${added} transaction${added > 1 ? "s" : ""} importée${added > 1 ? "s" : ""}${skipped ? ` (${skipped} doublon${skipped > 1 ? "s" : ""} ignoré${skipped > 1 ? "s" : ""})` : ""}`, { type: "success", action: undoAction });
+  toast(`${added} transaction${added > 1 ? "s" : ""} importée${added > 1 ? "s" : ""}${skipped ? ` (${skipped} doublon${skipped > 1 ? "s" : ""} ignoré${skipped > 1 ? "s" : ""})` : ""}`, { type: "success", action: undoAction() });
 }
 
 // Lit un fichier texte ; si l'UTF-8 échoue (export Excel français), retente en Windows-1252.
@@ -792,6 +809,7 @@ function download(filename, content, type){
 }
 
 const stamp = () => U.msToIso(U.todayMs());
+const slug = s => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "position";
 
 function initImportExport(){
   el.csvText.addEventListener("input", U.debounce(updateImportPreview, 120));
@@ -827,34 +845,52 @@ function initImportExport(){
     el.restoreFile.value = "";
   });
 
-  el.btnDataMenu.addEventListener("click", e => { e.stopPropagation(); toggleMenu(); });
+  el.btnDataMenu.addEventListener("click", e => { e.stopPropagation(); toggleMenu(null, el.dataMenu); });
   el.dataMenu.querySelector(".menu-list").addEventListener("click", e => {
     const b = e.target.closest("button[data-action]");
     if(!b) return;
     toggleMenu(false);
     runAction(b.dataset.action);
   });
-  document.addEventListener("click", e => { if(!el.dataMenu.contains(e.target)) toggleMenu(false); });
+  document.addEventListener("click", e => {
+    if(!el.dataMenu.contains(e.target)) toggleMenu(false, el.dataMenu);
+    if(!el.posMenu.contains(e.target)) toggleMenu(false, el.posMenu);
+  });
+  // Navigation au clavier dans les menus (flèches haut / bas).
+  document.querySelectorAll(".menu-list").forEach(list => list.addEventListener("keydown", e => {
+    if(e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    if(e.altKey) return;
+    e.preventDefault();
+    const items = [...list.querySelectorAll("button:not([disabled])")].filter(b => b.offsetParent !== null);
+    const i = items.indexOf(document.activeElement);
+    const next = items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length];
+    if(next) next.focus();
+  }));
 }
 
 async function restoreFrom(file){
   try{
     const data = JSON.parse(await readTextFile(file));
-    const n = store.replaceFromBackup(data);
-    chart.resetView("both");
-    toast(`Sauvegarde restaurée : ${n} transaction${n > 1 ? "s" : ""}`, { type: "success", action: undoAction });
-    if(S().assetTicker) { el.tickerInput.value = S().assetTicker; loadAsset(S().assetTicker, { silent: true }); }
+    const res = store.restoreBackup(data);
+    const msg = res.mode === "all"
+      ? `Sauvegarde restaurée : ${res.count} position${res.count > 1 ? "s" : ""}`
+      : `Sauvegarde ajoutée comme nouvelle position « ${S().name} »`;
+    toast(msg, { type: "success", timeout: 10000, action: { label: "Annuler", fn: res.undo } });
   }catch(e){
     toast("Fichier de sauvegarde illisible.", { type: "error" });
   }
 }
 
-function toggleMenu(force){
-  const list = el.dataMenu.querySelector(".menu-list");
+function toggleMenu(force, menu = el.dataMenu){
+  const list = menu.querySelector(".menu-list");
   const open = force != null ? force : list.hidden;
+  if(open === !list.hidden) return;
   list.hidden = !open;
-  el.btnDataMenu.setAttribute("aria-expanded", String(open));
-  if(open) list.querySelector("button").focus();
+  menu.querySelector("[aria-haspopup]").setAttribute("aria-expanded", String(open));
+  if(open){
+    [el.dataMenu, el.posMenu].forEach(m => { if(m !== menu) toggleMenu(false, m); });
+    (list.querySelector('[aria-checked="true"]') || list.querySelector("button")).focus();
+  }
 }
 
 function runAction(action){
@@ -862,7 +898,7 @@ function runAction(action){
     case "import": openImport(); break;
     case "export-csv":
       if(!S().transactions.length) return toast("Aucune transaction à exporter.", { type: "error" });
-      download(`irrviz-transactions-${stamp()}.csv`, CSV.toCsv(S().transactions), "text/csv;charset=utf-8");
+      download(`irrviz-${slug(S().name)}-${stamp()}.csv`, CSV.toCsv(S().transactions), "text/csv;charset=utf-8");
       break;
     case "backup":
       download(`irrviz-sauvegarde-${stamp()}.json`, JSON.stringify(store.backup(), null, 2), "application/json");
@@ -871,12 +907,12 @@ function runAction(action){
     case "sample":
       store.loadSample();
       chart.resetView("both");
-      toast("Exemple chargé", { action: undoAction });
+      toast("Exemple chargé", { action: undoAction() });
       break;
     case "clear":
       if(!S().transactions.length) return;
       store.update(s => { s.transactions = []; });
-      toast("Toutes les transactions ont été effacées", { action: undoAction, timeout: 8000 });
+      toast(`Transactions de « ${S().name} » effacées`, { action: undoAction(), timeout: 8000 });
       break;
   }
 }
@@ -892,7 +928,8 @@ function isTyping(t){
 function initShortcuts(){
   document.addEventListener("keydown", e => {
     if(e.key === "Escape"){
-      toggleMenu(false);
+      toggleMenu(false, el.dataMenu);
+      toggleMenu(false, el.posMenu);
       if(document.body.classList.contains("drawer-open")) setDrawer(false);
       return;
     }
@@ -903,6 +940,11 @@ function initShortcuts(){
       const redo = e.key === "y" || e.shiftKey;
       const done = redo ? store.redo() : store.undo();
       if(!done) toast(redo ? "Rien à rétablir" : "Rien à annuler", { timeout: 1400 });
+      return;
+    }
+    if(e.altKey && !mod && (e.key === "ArrowUp" || e.key === "ArrowDown") && !isTyping(e.target) && !document.querySelector("dialog[open]")){
+      e.preventDefault();
+      cyclePosition(e.key === "ArrowDown" ? 1 : -1);
       return;
     }
     if(mod || e.altKey || isTyping(e.target) || document.querySelector("dialog[open]")) return;
@@ -924,6 +966,156 @@ function initShortcuts(){
 }
 
 /* =====================================================================
+   Positions
+   ===================================================================== */
+
+function positionSummaryText(p){
+  const n = p.transactions.length;
+  const parts = [`${n} transaction${n > 1 ? "s" : ""}`];
+  if(p.assetTicker) parts.push(p.assetTicker);
+  return parts.join(" · ");
+}
+
+function renderPositions(){
+  const cur = S();
+  const list = store.positions;
+  el.posName.textContent = cur.name;
+  el.posSub.textContent = list.length > 1 ? `${list.indexOf(cur) + 1} / ${list.length}` : positionSummaryText(cur);
+  el.btnPosMenu.title = `Position : ${cur.name} — changer de position (Alt+↑ / Alt+↓)`;
+  document.title = `${cur.name} — IRRViz 2`;
+  const focused = document.activeElement && el.posItems.contains(document.activeElement)
+    ? { id: document.activeElement.closest("[data-id]")?.dataset.id, act: document.activeElement.dataset.move || "pick" } : null;
+  el.posItems.innerHTML = list.map((p, i) => {
+    const on = p.id === cur.id;
+    const id = U.escapeHtml(p.id);
+    return `<div class="pos-item${on ? " active" : ""}" data-id="${id}">
+      <button class="pos-pick" role="menuitemradio" aria-checked="${on}" data-id="${id}">
+        <svg class="ic pos-check"><use href="#i-check"/></svg>
+        <span class="pos-item-text"><b>${U.escapeHtml(p.name)}</b><small>${U.escapeHtml(positionSummaryText(p))}</small></span>
+      </button>
+      <span class="pos-move">
+        <button class="icon-btn tiny" data-move="-1" title="Monter" aria-label="Monter ${U.escapeHtml(p.name)}"${i === 0 ? " disabled" : ""}><svg class="ic"><use href="#i-chevron-up"/></svg></button>
+        <button class="icon-btn tiny" data-move="1" title="Descendre" aria-label="Descendre ${U.escapeHtml(p.name)}"${i === list.length - 1 ? " disabled" : ""}><svg class="ic"><use href="#i-chevron"/></svg></button>
+      </span>
+    </div>`;
+  }).join("");
+  if(focused && focused.id){
+    const item = el.posItems.querySelector(`.pos-item[data-id="${CSS.escape(focused.id)}"]`);
+    const target = item && (focused.act === "pick" ? item.querySelector(".pos-pick") : item.querySelector(`[data-move="${focused.act}"]:not([disabled])`) || item.querySelector(".pos-pick"));
+    if(target) target.focus();
+  }
+  el.posMenu.querySelector('[data-pos="delete"]').innerHTML =
+    `<svg class="ic"><use href="#i-trash"/></svg>${list.length > 1 ? "Supprimer la position" : "Réinitialiser la position"}`;
+}
+
+// Appelé quand la position active change : on repart d'un état d'affichage propre.
+function onSwitch(){
+  highlightId = null;
+  assetRequest++;
+  assetData = null;
+  assetState = { status: "idle" };
+  el.tickerInput.value = S().assetTicker;
+  renderAssetStatus();
+  chart.restoreView(S().view);
+  updateViewButtons();
+  if(el.importDialog.open) el.importDialog.close("cancel");
+}
+
+function cyclePosition(delta){
+  const list = store.positions;
+  if(list.length < 2) return;
+  const i = list.findIndex(p => p.id === store.activeId);
+  const next = list[(i + delta + list.length) % list.length];
+  store.switchTo(next.id);
+  toast(`Position : ${next.name}`, { timeout: 1400 });
+}
+
+let posDialogMode = "new";
+function openPosDialog(mode){
+  posDialogMode = mode;
+  const cur = S();
+  el.posDialog.returnValue = "";
+  if(mode === "new"){
+    el.posDialogTitle.textContent = "Nouvelle position";
+    el.posNameInput.value = "";
+    el.posNameInput.placeholder = "ex : PEA – ETF Monde";
+    el.posCopyRow.hidden = false;
+    el.posCopyFrom.textContent = cur.name;
+    el.posDialogHint.hidden = false;
+    el.posDialogOk.textContent = "Créer";
+  } else {
+    el.posDialogTitle.textContent = "Renommer la position";
+    el.posNameInput.value = cur.name;
+    el.posNameInput.placeholder = cur.name;
+    el.posCopyRow.hidden = true;
+    el.posDialogHint.hidden = true;
+    el.posDialogOk.textContent = "Renommer";
+  }
+  el.posDialog.showModal();
+  el.posNameInput.focus();
+  el.posNameInput.select();
+}
+
+function runPositionAction(action){
+  const cur = S();
+  switch(action){
+    case "new": openPosDialog("new"); break;
+    case "rename": openPosDialog("rename"); break;
+    case "duplicate":
+      store.duplicatePosition();
+      toast(`Position dupliquée : « ${S().name} »`, { type: "success", timeout: 3000 });
+      break;
+    case "delete": {
+      const only = store.positions.length === 1;
+      if(only && !cur.transactions.length && cur.autoName) return;
+      const token = store.deletePosition();
+      toast(only ? `Position « ${cur.name} » réinitialisée` : `Position « ${cur.name} » supprimée`, {
+        timeout: 10000,
+        action: { label: "Annuler", fn: () => store.restorePosition(token) },
+      });
+      break;
+    }
+  }
+}
+
+function initPositions(){
+  el.btnPosMenu.addEventListener("click", e => { e.stopPropagation(); toggleMenu(null, el.posMenu); });
+  el.posMenu.querySelector(".menu-list").addEventListener("click", e => {
+    const move = e.target.closest("button[data-move]");
+    if(move){
+      e.stopPropagation();
+      store.movePosition(move.closest("[data-id]").dataset.id, Number(move.dataset.move));
+      return;
+    }
+    const pick = e.target.closest(".pos-pick");
+    if(pick){
+      toggleMenu(false, el.posMenu);
+      store.switchTo(pick.dataset.id);
+      return;
+    }
+    const act = e.target.closest("button[data-pos]");
+    if(act){
+      toggleMenu(false, el.posMenu);
+      runPositionAction(act.dataset.pos);
+    }
+  });
+  el.posDialog.addEventListener("click", e => {
+    if(e.target === el.posDialog || e.target.closest("[data-cancel]")) el.posDialog.close("cancel");
+  });
+  el.posDialog.addEventListener("close", () => {
+    if(el.posDialog.returnValue !== "ok") return;
+    const name = el.posNameInput.value;
+    if(posDialogMode === "new"){
+      store.createPosition({ name, copySettingsFrom: el.posCopySettings.checked ? store.activeId : null });
+      toast(`Position « ${S().name} » créée`, { type: "success", timeout: 2500 });
+      requestAnimationFrame(() => el.emptyState.querySelector('[data-empty="add"]').focus());
+    } else {
+      store.renamePosition(store.activeId, name);
+    }
+  });
+}
+
+/* =====================================================================
    Synchronisation état → interface
    ===================================================================== */
 
@@ -933,6 +1125,7 @@ function updateUndoButtons(){
 }
 
 function refreshOutputs(){
+  renderPositions();
   el.emptyState.classList.toggle("hidden", !!model);
   el.chartWrap.classList.toggle("is-empty", !model);
   renderKpis();
@@ -943,6 +1136,8 @@ function refreshOutputs(){
 
 store.subscribe(kind => {
   if(kind === "none"){ updateUndoButtons(); return; }
+  if(kind === "positions"){ renderPositions(); return; }
+  if(kind === "switch") onSwitch();
   if(kind === "ui"){
     renderToggles(); applyPanelState(); renderChips(); renderLegend(); pushChart();
     return;
@@ -954,7 +1149,7 @@ store.subscribe(kind => {
   } else {
     renderTxList(); renderChips(); renderSettings();
   }
-  if(kind === "reset"){
+  if(kind === "reset" || kind === "switch"){
     const t = S().assetTicker;
     if(t && (!assetData || assetData.ticker !== t)){ el.tickerInput.value = t; loadAsset(t, { silent: true }); }
     else if(!t && assetData){ assetData = null; assetState = { status: "idle" }; el.tickerInput.value = ""; renderAssetStatus(); }
@@ -974,7 +1169,7 @@ function init(){
   // État replié / déplié des cartes, persistant.
   document.querySelectorAll("details.card[data-card]").forEach(card => {
     const name = card.dataset.card;
-    if(name in S().ui.collapsed) card.open = !S().ui.collapsed[name];
+    if(name in G().ui.collapsed) card.open = !G().ui.collapsed[name];
     card.addEventListener("toggle", () => store.setUi(s => { s.ui.collapsed[name] = !card.open; }, "none"));
   });
 
@@ -1022,12 +1217,13 @@ function init(){
     else runAction("sample");
   });
 
+  initPositions();
   initThresholds();
   initSettings();
   initImportExport();
   initShortcuts();
 
-  mqLight.addEventListener("change", () => { if(S().ui.theme === "auto"){ applyTheme(); renderChips(); renderLegend(); pushChart(); } });
+  mqLight.addEventListener("change", () => { if(G().ui.theme === "auto"){ applyTheme(); renderChips(); renderLegend(); pushChart(); } });
   mqMobile.addEventListener("change", () => { setDrawer(false); applyPanelState(); });
   window.addEventListener("pagehide", () => store.flush());
   document.addEventListener("visibilitychange", () => { if(document.hidden) store.flush(); });

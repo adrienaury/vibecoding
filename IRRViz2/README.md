@@ -4,6 +4,16 @@ Seconde version d'[IRRViz](../IRRViz/) : à partir de vos transactions, visualis
 
 Même stack que la v1 : site **100 % statique** (HTML, CSS, JavaScript sans dépendance ni étape de build), persistance dans le **localStorage** du navigateur. Ouvrez simplement `index.html`, ou servez le dossier avec n'importe quel serveur statique.
 
+## Plusieurs positions
+
+Le menu **Positions** (en haut à gauche) permet de suivre plusieurs actifs. Chaque position a ses propres transactions, seuils, frais, horizon, symbole Yahoo, vue du graphique, historique annuler / rétablir et cache de cours. Le thème, l'affichage du panneau et le port du proxy sont communs.
+
+- Créer une position (vide, en reprenant éventuellement les seuils, frais et horizon de la position courante), la dupliquer, la renommer, la supprimer (annulable depuis la notification), réordonner la liste.
+- Passer d'une position à l'autre avec le menu ou `Alt+↑` / `Alt+↓`.
+- Sans nom choisi, une position prend automatiquement le symbole de l'actif chargé.
+- La sauvegarde JSON contient toutes les positions et leurs cours en cache. Restaurer une sauvegarde complète remplace toutes les positions (annulable) ; une sauvegarde d'avant les positions est ajoutée comme nouvelle position.
+- Les données existantes (IRRViz 2 mono-position, ou IRRViz v1) sont reprises automatiquement dans une première position.
+
 ## Nouveautés par rapport à la v1
 
 ### Lecture du graphique
@@ -46,6 +56,7 @@ Même stack que la v1 : site **100 % statique** (HTML, CSS, JavaScript sans dép
 | Touche | Action |
 |---|---|
 | `N` | Nouvelle transaction |
+| `Alt+↑` / `Alt+↓` | Position précédente / suivante |
 | `I` | Importer un CSV |
 | `Ctrl+Z` / `Ctrl+Maj+Z` | Annuler / rétablir |
 | `+` / `−` / `0` | Zoomer / dézoomer / vue d'ensemble |
@@ -89,20 +100,20 @@ IRRViz2/
 ├── js/
 │   ├── util.js    dates, formats, saisie numérique, palette
 │   ├── model.js   prix seuils, TRI, synthèse de position
-│   ├── store.js   état, localStorage, annuler / rétablir, migration v1
+│   ├── store.js   positions, localStorage, annuler / rétablir, migrations
 │   ├── csv.js     import / export CSV
 │   ├── asset.js   cours Yahoo Finance via le proxy
 │   ├── chart.js   graphique SVG interactif
 │   └── app.js     interface
 ├── proxy.py
-└── tests/model.test.js
+└── tests/         model.test.js, store.test.js
 ```
 
 Les scripts sont des scripts classiques (pas de modules ES) pour que l'application fonctionne aussi ouverte directement depuis le disque (`file://`).
 
 ## Tests
 
-Le moteur de calcul et l'import CSV sont testés avec le lanceur intégré de Node.js (≥ 18) :
+Le moteur de calcul, l'import CSV et la gestion des positions (migrations, création, suppression, restauration) sont testés avec le lanceur intégré de Node.js (≥ 18) :
 
 ```bash
 node --test IRRViz2/tests/*.test.js
