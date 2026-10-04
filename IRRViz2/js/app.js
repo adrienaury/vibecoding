@@ -27,6 +27,11 @@ const el = {
   feeInput: $("feeInput"), horizonInput: $("horizonInput"), quickRange: $("quickRange"),
   assetForm: $("assetForm"), tickerInput: $("tickerInput"), btnClearAsset: $("btnClearAsset"), btnLoadAsset: $("btnLoadAsset"),
   assetStatus: $("assetStatus"), proxyDot: $("proxyDot"), proxyPort: $("proxyPort"), btnCheckProxy: $("btnCheckProxy"),
+  assetCard: document.querySelector('details.card[data-card="asset"]'),
+  srcYahoo: $("srcYahoo"), srcManual: $("srcManual"), srcPanelYahoo: $("srcPanelYahoo"), srcPanelManual: $("srcPanelManual"),
+  btnImportPrices: $("btnImportPrices"), btnExportPrices: $("btnExportPrices"), btnClearPrices: $("btnClearPrices"),
+  manualHint: $("manualHint"), proxyDetails: $("proxyDetails"),
+  importTitle: $("importTitle"), priceName: $("priceName"), priceModeRow: $("priceModeRow"),
   kpis: $("kpis"), legend: $("legend"),
   tglBands: $("tglBands"), tglLabels: $("tglLabels"), tglCandles: $("tglCandles"),
   btnZoomIn: $("btnZoomIn"), btnZoomOut: $("btnZoomOut"), btnResetView: $("btnResetView"),
@@ -40,7 +45,9 @@ const mqLight = window.matchMedia("(prefers-color-scheme: light)");
 const mqMobile = window.matchMedia("(max-width: 900px)");
 
 let model = null;
-let assetData = null;      // { ticker, candles, currency, name, exchange, fetchedAt, cached }
+// Cours affichés : { source: "yahoo" | "manual", kind: "ohlc" | "close", ticker (libellé), candles,
+// currency, name, exchange, fetchedAt, cached, fileName, importedAt }
+let assetData = null;
 let assetState = { status: "idle", message: "" };
 let proxyOk = null;
 let highlightId = null;
@@ -471,9 +478,42 @@ async function checkProxy(verbose){
   return ok;
 }
 
+function renderSource(){
+  const manual = S().priceSource === "manual";
+  el.srcYahoo.setAttribute("aria-selected", String(!manual));
+  el.srcManual.setAttribute("aria-selected", String(manual));
+  el.srcPanelYahoo.hidden = manual;
+  el.srcPanelManual.hidden = !manual;
+  el.proxyDetails.hidden = manual;
+  el.manualHint.hidden = !manual;
+  el.assetCard.dataset.source = manual ? "manual" : "yahoo";
+  const hasManual = manual && assetData && assetData.source === "manual";
+  el.btnExportPrices.hidden = !hasManual;
+  el.btnClearPrices.hidden = !hasManual;
+  el.btnImportPrices.querySelector("span").textContent = hasManual ? "Mettre à jour…" : "Importer un historique…";
+}
+
 function renderAssetStatus(){
   const st = assetState;
   let html = "";
+  renderSource();
+  if(assetData && assetData.source === "manual"){
+    const cs = assetData.candles, first = cs[0], last = cs[cs.length - 1];
+    html = `<div class="asset-title"><b>${U.escapeHtml(assetData.ticker)}</b>${assetData.fileName ? ` <span>${U.escapeHtml(assetData.fileName)}</span>` : ""}</div>`;
+    html += `<div class="asset-line">${cs.length} cours ${assetData.kind === "ohlc" ? "OHLC" : "de clôture"} du ${U.fmtDate(first.ms)} au ${U.fmtDate(last.ms)}</div>`;
+    html += `<div class="asset-line">Dernier cours ${U.fmtEUR3.format(last.close)}${assetData.importedAt ? ` · importé le ${U.fmtDate(assetData.importedAt)}` : ""}</div>`;
+    if(last.ms < U.todayMs() - 45 * DAY){
+      html += `<div class="asset-line warn"><svg class="ic"><use href="#i-warn"/></svg> Dernier cours ancien : la plus-value et le TRI actuels sont calculés avec ce cours.</div>`;
+    }
+    el.assetStatus.innerHTML = html;
+    el.tglCandles.hidden = false;
+    return;
+  }
+  if(S().priceSource === "manual"){
+    el.assetStatus.innerHTML = `<span class="muted">Aucun historique importé pour cette position.</span>`;
+    el.tglCandles.hidden = true;
+    return;
+  }
   if(st.status === "loading"){
     html = `<span class="spinner" aria-hidden="true"></span> Chargement de ${U.escapeHtml(st.ticker)}…`;
   } else if(assetData){
@@ -503,7 +543,7 @@ async function loadAsset(ticker, { silent = false } = {}){
   if(sym !== S().assetTicker) store.update(s => { s.assetTicker = sym; }, { kind: "none" });
   if(!assetData || assetData.ticker !== sym){
     const cache = store.readCandleCache(sym);
-    assetData = cache ? { ticker: sym, candles: cache.candles, currency: cache.currency, fetchedAt: cache.fetchedAt, cached: true } : null;
+    assetData = cache ? { source: "yahoo", kind: "ohlc", ticker: sym, candles: cache.candles, currency: cache.currency, fetchedAt: cache.fetchedAt, cached: true } : null;
   }
   const req = ++assetRequest;
   const posId = store.activeId;
@@ -520,7 +560,8 @@ async function loadAsset(ticker, { silent = false } = {}){
       store.autoNamePosition(posId, sym);
     }
     if(req !== assetRequest) return;
-    assetData = Object.assign(res, { fetchedAt: Date.now(), cached: false });
+    if(S().priceSource !== "yahoo") return;
+    assetData = Object.assign(res, { source: "yahoo", kind: "ohlc", fetchedAt: Date.now(), cached: false });
     assetState = { status: "ok" };
     if(!silent) toast(`${sym} : ${res.candles.length} séances chargées`, { type: "success", timeout: 2500 });
   }catch(err){
@@ -542,7 +583,68 @@ function clearAsset(){
   renderAssetStatus(); pushChart(); renderKpis(); renderLegend();
 }
 
+// (Re)charge les cours de la position active selon sa source : historique importé,
+// ou cache Yahoo puis téléchargement si un symbole est défini.
+function syncAsset(){
+  assetRequest++;
+  assetData = null;
+  assetState = { status: "idle" };
+  el.tickerInput.value = S().assetTicker;
+  if(S().priceSource === "manual"){
+    const rec = store.readManualPrices();
+    if(rec) assetData = manualAssetData(rec);
+  } else if(S().assetTicker){
+    loadAsset(S().assetTicker, { silent: true });
+    return;
+  }
+  renderAssetStatus();
+}
+
+function manualAssetData(rec){
+  return { source: "manual", kind: rec.kind, ticker: rec.name, candles: rec.candles, currency: null, fileName: rec.fileName, importedAt: rec.importedAt };
+}
+
+function refreshAssetViews(){ renderAssetStatus(); pushChart(); renderKpis(); renderLegend(); }
+
+// Exécute `fn` sur la position `posId` (bascule dessus si besoin) : utilisé par les « Annuler ».
+function onPosition(posId, fn){
+  if(store.activeId !== posId && !store.switchTo(posId)) return;
+  fn();
+}
+
+function setPriceSource(src, posId = store.activeId){
+  onPosition(posId, () => {
+    if(S().priceSource === src) return;
+    store.update(s => { s.priceSource = src; }, { undoable: false, kind: "none" });
+    if(src === "yahoo" && proxyOk == null) checkProxy(false);
+    syncAsset();
+    refreshAssetViews();
+  });
+}
+
+function clearManualPrices(){
+  const posId = store.activeId;
+  const prev = store.readManualPrices();
+  if(!prev) return;
+  store.clearManualPrices();
+  syncAsset(); refreshAssetViews();
+  toast(`Historique « ${prev.name} » retiré`, {
+    timeout: 8000,
+    action: { label: "Annuler", fn: () => onPosition(posId, () => { store.writeManualPrices(prev); syncAsset(); refreshAssetViews(); }) },
+  });
+}
+
+function exportManualPrices(){
+  if(!assetData || assetData.source !== "manual") return;
+  download(`irrviz-cours-${slug(assetData.ticker)}-${stamp()}.csv`, CSV.toPriceCsv(assetData.candles, assetData.kind), "text/csv;charset=utf-8");
+}
+
 function initAsset(){
+  el.srcYahoo.addEventListener("click", () => setPriceSource("yahoo"));
+  el.srcManual.addEventListener("click", () => setPriceSource("manual"));
+  el.btnImportPrices.addEventListener("click", () => openImport(undefined, "prices"));
+  el.btnExportPrices.addEventListener("click", exportManualPrices);
+  el.btnClearPrices.addEventListener("click", clearManualPrices);
   el.assetForm.addEventListener("submit", e => {
     e.preventDefault();
     loadAsset(el.tickerInput.value);
@@ -557,14 +659,11 @@ function initAsset(){
     } else el.proxyPort.value = G().proxyPort;
   });
   el.btnCheckProxy.addEventListener("click", () => checkProxy(true));
-  const card = document.querySelector('details.card[data-card="asset"]');
-  card.addEventListener("toggle", () => { if(card.open && proxyOk == null) checkProxy(false); });
+  const card = el.assetCard;
+  card.addEventListener("toggle", () => { if(card.open && proxyOk == null && S().priceSource === "yahoo") checkProxy(false); });
 
-  if(S().assetTicker){
-    el.tickerInput.value = S().assetTicker;
-    loadAsset(S().assetTicker, { silent: true });
-  } else if(card.open) checkProxy(false);
-  renderAssetStatus();
+  syncAsset();
+  if(!S().assetTicker && card.open && S().priceSource === "yahoo") checkProxy(false);
 }
 
 /* =====================================================================
@@ -654,7 +753,7 @@ function renderKpis(){
     cards.push(kpi({
       label: "Cours de l'actif",
       value: "—",
-      sub: assetState.status === "loading" ? "chargement…" : "Ajoutez un symbole pour obtenir la plus-value et le TRI actuels",
+      sub: assetState.status === "loading" ? "chargement…" : "Ajoutez un symbole ou importez un historique pour obtenir la plus-value et le TRI actuels",
       action: "asset",
       tone: "ghost",
     }));
@@ -678,7 +777,7 @@ function renderLegend(){
   items.push(`<span class="litem"><span class="ldot sell"></span>Vente</span>`);
   if(model.points.some(p => !p.quantity)) items.push(`<span class="litem"><span class="ltri"></span>Flux</span>`);
   if(model.points.some(p => p.cumQty === 0)) items.push(`<span class="litem"><span class="lhatch"></span>Soldée</span>`);
-  if(assetData && G().ui.showCandles) items.push(`<span class="litem"><span class="lcandle"></span>${U.escapeHtml(assetData.ticker)}</span>`);
+  if(assetData && G().ui.showCandles) items.push(`<span class="litem"><span class="${assetData.kind === "close" ? "lassetline" : "lcandle"}"></span>${U.escapeHtml(assetData.ticker)}</span>`);
   el.legend.innerHTML = items.join("");
 }
 
@@ -708,6 +807,7 @@ function pushChart(){
     feeFrac: S().feePercent / 100,
     candles: assetData ? assetData.candles : null,
     ticker: assetData ? assetData.ticker : "",
+    priceKind: assetData ? assetData.kind : "ohlc",
     horizonMs: Number.isFinite(horizon) ? horizon : null,
     showBands: G().ui.showBands,
     showLabels: G().ui.showLabels,
@@ -726,15 +826,40 @@ function updateViewButtons(){
    ===================================================================== */
 
 let importParsed = null;
+let importMode = "tx";        // "tx" (transactions) | "prices" (historique de cours)
+let importFileName = null;
 
-function openImport(prefill){
+const IMPORT_PLACEHOLDER = {
+  tx: "date ; montant ; quantité\n01/01/2026;-1000,00;1000\n01/02/2026;500,00;-400",
+  prices: "date ; cours\n31/03/2026;250,10\n30/06/2026;252,40",
+};
+
+function openImport(prefill, mode = "tx", fileName = null){
   if(typeof prefill === "string") el.csvText.value = prefill;
+  importFileName = fileName;
   // Échap ne modifie pas returnValue : on le remet à zéro pour ne pas rejouer un import précédent.
   el.importDialog.returnValue = "";
-  updateImportPreview();
-  el.importDialog.showModal();
+  setImportMode(mode);
+  if(!el.importDialog.open) el.importDialog.showModal();
   el.csvText.focus();
 }
+
+function setImportMode(mode){
+  importMode = mode;
+  el.importTitle.textContent = mode === "prices" ? `Importer un historique de cours — ${S().name}` : "Importer des transactions";
+  el.importDialog.querySelectorAll("[data-for]").forEach(n => { n.hidden = n.dataset.for !== mode; });
+  el.csvText.placeholder = IMPORT_PLACEHOLDER[mode];
+  if(mode === "prices"){
+    const existing = store.readManualPrices();
+    el.priceModeRow.hidden = !existing;
+    el.importForm.querySelector('input[name="priceMode"][value="replace"]').checked = true;
+    el.priceName.value = existing ? existing.name : "";
+    el.priceName.placeholder = fileBaseName(importFileName) || "ex : SCPI Primovie";
+  }
+  updateImportPreview();
+}
+
+const fileBaseName = name => (name || "").replace(/\.[^.]+$/, "").trim();
 
 function updateImportPreview(){
   const text = el.csvText.value;
@@ -745,6 +870,7 @@ function updateImportPreview(){
     el.btnImportConfirm.textContent = "Importer";
     return;
   }
+  if(importMode === "prices") return updatePricePreview(text);
   importParsed = CSV.parseCsv(text);
   const { rows, rejected, headerSkipped } = importParsed;
   let html = `<div class="preview-summary"><span class="ok">${rows.length} transaction${rows.length > 1 ? "s" : ""} valide${rows.length > 1 ? "s" : ""}</span>`;
@@ -760,16 +886,90 @@ function updateImportPreview(){
     if(rows.length > 6) html += `<tr><td colspan="4" class="muted">… et ${rows.length - 6} autre${rows.length - 6 > 1 ? "s" : ""}</td></tr>`;
     html += `</tbody></table>`;
   }
-  if(rejected.length){
-    html += `<ul class="preview-errors">${rejected.slice(0, 5).map(r => `<li>Ligne ${r.line} : ${U.escapeHtml(r.reason)} — <code>${U.escapeHtml(r.text.slice(0, 60))}</code></li>`).join("")}${rejected.length > 5 ? `<li>…</li>` : ""}</ul>`;
+  // Aucune transaction reconnue mais un historique de cours plausible : on propose de basculer.
+  if(!rows.length){
+    const asPrices = CSV.parsePriceCsv(text);
+    if(asPrices.rows.length >= 2){
+      html += `<div class="import-switch"><span>Ce fichier ressemble à un historique de cours (${asPrices.rows.length} dates).</span><button class="btn tiny primary" type="button" data-switch="prices">L'importer comme cours de l'actif</button></div>`;
+    }
   }
+  html += rejectedHtml(rejected);
   el.importPreview.innerHTML = html;
   el.btnImportConfirm.disabled = rows.length === 0;
   el.btnImportConfirm.textContent = rows.length ? `Importer ${rows.length} transaction${rows.length > 1 ? "s" : ""}` : "Importer";
 }
 
+function rejectedHtml(rejected){
+  if(!rejected.length) return "";
+  return `<ul class="preview-errors">${rejected.slice(0, 5).map(r => `<li>Ligne ${r.line} : ${U.escapeHtml(r.reason)} — <code>${U.escapeHtml(r.text.slice(0, 60))}</code></li>`).join("")}${rejected.length > 5 ? `<li>… et ${rejected.length - 5} autre${rejected.length - 5 > 1 ? "s" : ""}</li>` : ""}</ul>`;
+}
+
+function updatePricePreview(text){
+  importParsed = CSV.parsePriceCsv(text, { maxMs: U.todayMs() + DAY });
+  const { rows, rejected, headerSkipped, kind, dateOrder, duplicates } = importParsed;
+  const n = rows.length;
+  let html = `<div class="preview-summary"><span class="ok">${n} cours ${kind === "ohlc" ? "OHLC" : "de clôture"}</span>`;
+  if(n) html += ` du ${U.fmtDate(rows[0].ms)} au ${U.fmtDate(rows[n - 1].ms)}`;
+  if(rejected.length) html += ` · <span class="ko">${rejected.length} ligne${rejected.length > 1 ? "s" : ""} ignorée${rejected.length > 1 ? "s" : ""}</span>`;
+  if(headerSkipped) html += ` · <span class="muted">en-tête détecté</span>`;
+  if(dateOrder === "mdy") html += ` · <span class="muted">dates au format mm/jj/aaaa</span>`;
+  if(duplicates) html += ` · <span class="muted">${duplicates} date${duplicates > 1 ? "s" : ""} en double (dernière valeur retenue)</span>`;
+  html += `</div>`;
+  if(n){
+    const cols = kind === "ohlc" ? ["Ouverture", "Haut", "Bas", "Clôture"] : ["Cours"];
+    html += `<table class="preview-table"><thead><tr><th>Date</th>${cols.map(c => `<th class="num">${c}</th>`).join("")}</tr></thead><tbody>`;
+    const shown = n > 6 ? rows.slice(0, 3).concat([null], rows.slice(-2)) : rows;
+    shown.forEach(r => {
+      if(!r){ html += `<tr><td colspan="${cols.length + 1}" class="muted">… ${n - 5} autres dates …</td></tr>`; return; }
+      const vals = kind === "ohlc" ? [r.open, r.high, r.low, r.close] : [r.close];
+      html += `<tr><td>${U.fmtDate(r.ms)}</td>${vals.map(v => `<td class="num">${U.fmtEUR3.format(v)}</td>`).join("")}</tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+  html += rejectedHtml(rejected);
+  el.importPreview.innerHTML = html;
+  el.btnImportConfirm.disabled = n === 0;
+  el.btnImportConfirm.textContent = n ? `Importer ${n} cours` : "Importer";
+}
+
+function applyPriceImport(){
+  const parsed = importParsed;
+  const posId = store.activeId;
+  const prev = store.readManualPrices();
+  const prevSource = S().priceSource;
+  const merge = prev && !el.priceModeRow.hidden && el.importForm.querySelector('input[name="priceMode"]:checked').value === "merge";
+  let candles = parsed.rows, kind = parsed.kind;
+  if(merge){
+    const byDay = new Map(prev.candles.map(c => [c.ms, c]));
+    parsed.rows.forEach(r => byDay.set(r.ms, r));
+    candles = [...byDay.values()].sort((a, b) => a.ms - b.ms);
+    // Un historique mixte (OHLC + clôtures seules) est affiché en ligne de clôture.
+    kind = prev.kind === "ohlc" && parsed.kind === "ohlc" ? "ohlc" : "close";
+  }
+  const name = el.priceName.value.trim() || (merge && prev.name) || fileBaseName(importFileName) || "Cours importés";
+  const ok = store.writeManualPrices({ name, fileName: importFileName || (merge ? prev.fileName : null), kind, candles, importedAt: Date.now() });
+  if(!ok){
+    toast("Espace de stockage du navigateur insuffisant pour enregistrer cet historique.", { type: "error", timeout: 8000 });
+    return;
+  }
+  if(prevSource !== "manual") store.update(s => { s.priceSource = "manual"; }, { undoable: false, kind: "none" });
+  store.autoNamePosition(posId, name);
+  syncAsset(); refreshAssetViews();
+  el.csvText.value = "";
+  importParsed = null;
+  toast(`${merge ? "Historique complété" : "Historique importé"} : ${candles.length} cours pour « ${name} »`, {
+    type: "success", timeout: 8000,
+    action: { label: "Annuler", fn: () => onPosition(posId, () => {
+      if(prev) store.writeManualPrices(prev); else store.clearManualPrices();
+      if(prevSource !== "manual") store.update(s => { s.priceSource = prevSource; }, { undoable: false, kind: "none" });
+      syncAsset(); refreshAssetViews();
+    }) },
+  });
+}
+
 function applyImport(){
   if(!importParsed || !importParsed.rows.length) return;
+  if(importMode === "prices") return applyPriceImport();
   const mode = el.importForm.querySelector('input[name="importMode"]:checked').value;
   const dedupe = el.importDedupe.checked;
   const key = t => `${t.iso}|${t.amount}|${t.quantity}`;
@@ -815,7 +1015,7 @@ function initImportExport(){
   el.csvText.addEventListener("input", U.debounce(updateImportPreview, 120));
   el.csvFile.addEventListener("change", async () => {
     const f = el.csvFile.files[0];
-    if(f){ el.csvText.value = await readTextFile(f); updateImportPreview(); }
+    if(f){ el.csvText.value = await readTextFile(f); importFileName = f.name; setImportMode(importMode); }
     el.csvFile.value = "";
   });
   ["dragenter", "dragover"].forEach(ev => el.dropzone.addEventListener(ev, e => { e.preventDefault(); el.dropzone.classList.add("over"); }));
@@ -823,7 +1023,11 @@ function initImportExport(){
   el.dropzone.addEventListener("drop", async e => {
     e.preventDefault();
     const f = e.dataTransfer.files[0];
-    if(f){ el.csvText.value = await readTextFile(f); updateImportPreview(); }
+    if(f){ el.csvText.value = await readTextFile(f); importFileName = f.name; setImportMode(importMode); }
+  });
+  el.importPreview.addEventListener("click", e => {
+    const b = e.target.closest("[data-switch]");
+    if(b) setImportMode(b.dataset.switch);
   });
   el.importDialog.addEventListener("close", () => {
     if(el.importDialog.returnValue === "default") applyImport();
@@ -836,7 +1040,9 @@ function initImportExport(){
     e.preventDefault();
     const f = e.dataTransfer.files[0];
     if(/\.json$/i.test(f.name)) return restoreFrom(f);
-    openImport(await readTextFile(f));
+    // Déposé sur la carte « Cours de l'actif » en mode fichier : c'est un historique de cours.
+    const onPrices = e.target.closest && e.target.closest('[data-card="asset"]') && S().priceSource === "manual";
+    openImport(await readTextFile(f), onPrices ? "prices" : "tx", f.name);
   });
 
   el.restoreFile.addEventListener("change", () => {
@@ -1011,11 +1217,7 @@ function renderPositions(){
 // Appelé quand la position active change : on repart d'un état d'affichage propre.
 function onSwitch(){
   highlightId = null;
-  assetRequest++;
-  assetData = null;
-  assetState = { status: "idle" };
-  el.tickerInput.value = S().assetTicker;
-  renderAssetStatus();
+  syncAsset();
   chart.restoreView(S().view);
   updateViewButtons();
   if(el.importDialog.open) el.importDialog.close("cancel");
@@ -1149,7 +1351,7 @@ store.subscribe(kind => {
   } else {
     renderTxList(); renderChips(); renderSettings();
   }
-  if(kind === "reset" || kind === "switch"){
+  if(kind === "reset" && S().priceSource === "yahoo"){
     const t = S().assetTicker;
     if(t && (!assetData || assetData.ticker !== t)){ el.tickerInput.value = t; loadAsset(t, { silent: true }); }
     else if(!t && assetData){ assetData = null; assetState = { status: "idle" }; el.tickerInput.value = ""; renderAssetStatus(); }
@@ -1180,7 +1382,9 @@ function init(){
   el.btnTheme.addEventListener("click", cycleTheme);
   el.btnHelp.addEventListener("click", () => el.helpDialog.showModal());
   el.helpDialog.addEventListener("click", e => { if(e.target === el.helpDialog || e.target.closest("[data-close]")) el.helpDialog.close(); });
-  el.importDialog.addEventListener("click", e => { if(e.target === el.importDialog) el.importDialog.close("cancel"); });
+  el.importDialog.addEventListener("click", e => {
+    if(e.target === el.importDialog || e.target.closest("[data-cancel]")) el.importDialog.close("cancel");
+  });
 
   el.btnAddTx.addEventListener("click", addTransaction);
   el.btnImportOpen.addEventListener("click", () => openImport());

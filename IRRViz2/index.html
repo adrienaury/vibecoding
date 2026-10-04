@@ -185,13 +185,27 @@
           <svg class="ic chev"><use href="#i-chevron"/></svg>
         </summary>
         <div class="card-body">
-          <form class="inline-form" id="assetForm" autocomplete="off">
-            <input type="text" id="tickerInput" placeholder="Symbole Yahoo : AAPL, MC.PA, BTC-EUR…" aria-label="Symbole Yahoo Finance" spellcheck="false" />
-            <button class="btn small primary" type="submit" id="btnLoadAsset">Charger</button>
-            <button class="icon-btn small" type="button" id="btnClearAsset" title="Retirer l'actif" aria-label="Retirer l'actif"><svg class="ic"><use href="#i-x"/></svg></button>
-          </form>
+          <div class="seg" role="tablist" aria-label="Source des cours">
+            <button class="seg-btn" role="tab" id="srcYahoo" data-src="yahoo" aria-selected="true" aria-controls="srcPanelYahoo">Yahoo Finance</button>
+            <button class="seg-btn" role="tab" id="srcManual" data-src="manual" aria-selected="false" aria-controls="srcPanelManual">Fichier CSV</button>
+          </div>
+          <div class="src-panel" id="srcPanelYahoo" role="tabpanel" aria-labelledby="srcYahoo">
+            <form class="inline-form" id="assetForm" autocomplete="off">
+              <input type="text" id="tickerInput" placeholder="Symbole Yahoo : AAPL, MC.PA, BTC-EUR…" aria-label="Symbole Yahoo Finance" spellcheck="false" />
+              <button class="btn small primary" type="submit" id="btnLoadAsset">Charger</button>
+              <button class="icon-btn small" type="button" id="btnClearAsset" title="Retirer l'actif" aria-label="Retirer l'actif"><svg class="ic"><use href="#i-x"/></svg></button>
+            </form>
+          </div>
+          <div class="src-panel" id="srcPanelManual" role="tabpanel" aria-labelledby="srcManual" hidden>
+            <div class="manual-actions">
+              <button class="btn small primary" type="button" id="btnImportPrices"><svg class="ic"><use href="#i-upload"/></svg><span>Importer un historique…</span></button>
+              <button class="btn small" type="button" id="btnExportPrices" hidden><svg class="ic"><use href="#i-download"/></svg>Exporter</button>
+              <button class="icon-btn small" type="button" id="btnClearPrices" title="Retirer l'historique importé" aria-label="Retirer l'historique importé" hidden><svg class="ic"><use href="#i-trash"/></svg></button>
+            </div>
+          </div>
           <div class="asset-status" id="assetStatus" aria-live="polite"></div>
-          <details class="sub">
+          <p class="hint" id="manualHint" hidden>Pour les fonds, SCPI ou actifs absents de Yahoo : deux colonnes <code>date;cours</code> ou cinq <code>date;ouverture;haut;bas;clôture</code>. Les exports Yahoo Finance et Investing.com sont reconnus. Aucun proxy nécessaire.</p>
+          <details class="sub" id="proxyDetails">
             <summary>Proxy local</summary>
             <p class="hint">Yahoo Finance n'autorise pas les appels directs depuis le navigateur. Lancez le proxy fourni : <code>python proxy.py</code> dans le dossier IRRViz2.</p>
             <label class="field row">
@@ -264,7 +278,7 @@
   <form method="dialog" class="dialog-inner" id="importForm">
     <header class="dialog-head">
       <h2 id="importTitle">Importer des transactions</h2>
-      <button class="icon-btn" value="cancel" aria-label="Fermer"><svg class="ic"><use href="#i-x"/></svg></button>
+      <button class="icon-btn" type="button" data-cancel aria-label="Fermer"><svg class="ic"><use href="#i-x"/></svg></button>
     </header>
     <div class="dialog-body">
       <div class="dropzone" id="dropzone">
@@ -272,16 +286,27 @@
         <p><b>Déposez un fichier CSV</b> ici ou <label class="link">parcourez<input type="file" id="csvFile" accept=".csv,.txt,text/csv,text/plain" hidden /></label>, ou collez son contenu ci-dessous.</p>
       </div>
       <textarea id="csvText" rows="6" spellcheck="false" placeholder="date ; montant ; quantité&#10;01/01/2026;-1000,00;1000&#10;01/02/2026;500,00;-400"></textarea>
-      <p class="hint">Trois colonnes : <code>date</code> (jj/mm/aaaa ou aaaa-mm-jj), <code>montant</code> net en € et <code>quantité</code>. Séparateur <code>;</code>, tabulation ou <code>,</code>. Une éventuelle ligne d'en-tête est ignorée.</p>
+      <p class="hint" data-for="tx">Trois colonnes : <code>date</code> (jj/mm/aaaa ou aaaa-mm-jj), <code>montant</code> net en € et <code>quantité</code>. Séparateur <code>;</code>, tabulation ou <code>,</code>. Une éventuelle ligne d'en-tête est ignorée.</p>
+      <p class="hint" data-for="prices" hidden>Deux colonnes <code>date;cours</code>, ou cinq <code>date;ouverture;haut;bas;clôture</code>. Avec une ligne d'en-tête, les colonnes sont reconnues par leur nom : les exports Yahoo Finance (<code>Date,Open,High,Low,Close,…</code>) et Investing.com fonctionnent tels quels. Dates jj/mm/aaaa, mm/jj/aaaa (détecté) ou aaaa-mm-jj. Les cours doivent être en euros, comme vos transactions.</p>
       <div class="import-preview" id="importPreview"></div>
-      <div class="import-options">
+      <div class="import-options" data-for="prices" hidden>
+        <label class="field">
+          <span class="field-label">Nom de l'actif</span>
+          <input type="text" id="priceName" maxlength="40" placeholder="ex : SCPI Primovie" spellcheck="false" />
+        </label>
+        <div id="priceModeRow" class="import-options">
+          <label class="radio"><input type="radio" name="priceMode" value="replace" checked /> Remplacer l'historique existant</label>
+          <label class="radio"><input type="radio" name="priceMode" value="merge" /> Compléter l'historique existant (les dates déjà présentes sont mises à jour)</label>
+        </div>
+      </div>
+      <div class="import-options" data-for="tx">
         <label class="radio"><input type="radio" name="importMode" value="append" checked /> Ajouter aux transactions existantes</label>
         <label class="radio"><input type="radio" name="importMode" value="replace" /> Remplacer les transactions existantes</label>
         <label class="check"><input type="checkbox" id="importDedupe" checked /> Ignorer les doublons exacts</label>
       </div>
     </div>
     <footer class="dialog-foot">
-      <button class="btn ghost" value="cancel">Annuler</button>
+      <button class="btn ghost" type="button" data-cancel>Annuler</button>
       <button class="btn primary" id="btnImportConfirm" value="default" disabled>Importer</button>
     </footer>
   </form>
@@ -301,6 +326,7 @@
         <li>La courbe 0 % est votre <b>seuil de rentabilité</b> : en dessous, vous perdez de l'argent.</li>
         <li>Survolez le graphique : l'infobulle affiche le <b>TRI obtenu</b> si vous vendiez au prix pointé.</li>
         <li>Les zones hachurées correspondent aux périodes où la position est soldée.</li>
+        <li>Pas de symbole Yahoo pour votre actif (fonds, SCPI, non coté) ? Dans <b>Cours de l'actif › Fichier CSV</b>, importez son historique de cours : aucun proxy n'est nécessaire.</li>
         <li>Suivez plusieurs actifs avec le menu <b>Positions</b> (en haut à gauche) : chacune a ses propres transactions, seuils, frais, horizon et cours.</li>
       </ul>
       <h3>Raccourcis clavier</h3>

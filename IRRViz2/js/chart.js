@@ -367,6 +367,15 @@ IRR.createChart = function createChart({ wrap, svg, tooltip, onSelectTx, onViewC
     if(!vis.length) return;
     const step = vis.length >= 2 ? (vis[vis.length - 1].ms - vis[0].ms) / (vis.length - 1) : DAY;
     const stepPx = step / (view.end - view.start) * plotW;
+    if(input.priceKind === "close"){
+      // Historique sans OHLC (cours de clôture, valeur liquidative…) : ligne, avec des points
+      // quand ils sont assez espacés pour être distingués (cotations hebdomadaires, mensuelles…).
+      out.push(`<path class="asset-close strong" d="M ${vis.map(c => `${f1(xScale(c.ms))} ${f1(yScale(c.close))}`).join(" L ")}"/>`);
+      if(stepPx >= 6 || vis.length === 1){
+        vis.forEach(c => out.push(`<circle class="asset-point" cx="${f1(xScale(c.ms))}" cy="${f1(yScale(c.close))}" r="3.4"/>`));
+      }
+      return;
+    }
     if(stepPx < 3.2){
       // Trop de bougies pour être lisibles : ligne de clôture + enveloppe haut/bas.
       const hi = vis.map(c => `${f1(xScale(c.ms))} ${f1(yScale(Math.min(c.high, yMax * 2)))}`);
@@ -463,7 +472,9 @@ IRR.createChart = function createChart({ wrap, svg, tooltip, onSelectTx, onViewC
     while(lo < hi){ const mid = (lo + hi) >> 1; if(cs[mid].ms < ms) lo = mid + 1; else hi = mid; }
     let best = cs[lo];
     if(lo > 0 && Math.abs(cs[lo - 1].ms - ms) < Math.abs(best.ms - ms)) best = cs[lo - 1];
-    return Math.abs(best.ms - ms) <= 0.75 * DAY ? best : null;
+    // Tolérance : la séance du jour, ou ~8 px autour du curseur pour les cotations espacées.
+    const tol = Math.max(0.75 * DAY, layout ? 8 / layout.plotW * (view.end - view.start) : 0);
+    return Math.abs(best.ms - ms) <= tol ? best : null;
   }
 
   function hideHover(){
@@ -542,6 +553,17 @@ IRR.createChart = function createChart({ wrap, svg, tooltip, onSelectTx, onViewC
       }
       html += row("Position après", U.fmtNum.format(p.cumQty));
       html += `<div class="tt-foot">Cliquer pour retrouver la transaction</div>`;
+    } else if(candle && input.priceKind === "close"){
+      const i = input.candles.indexOf(candle);
+      const prev = i > 0 ? input.candles[i - 1] : null;
+      html = `<div class="tt-head"><span>${U.fmtDate(candle.ms)}</span><span class="tt-badge k-asset">${U.escapeHtml(input.ticker || "Asset")}</span></div>`;
+      html += row("Cours", `<b>${U.fmtEUR3.format(candle.close)}</b>`);
+      if(prev){
+        const chPct = (candle.close / prev.close - 1) * 100;
+        html += row(`Depuis le ${U.fmtDate(prev.ms)}`, `<span class="${chPct >= 0 ? "pos" : "neg"}">${U.fmtPct(chPct)}</span>`);
+      }
+      const irr = irrRow(candle.ms, candle.close);
+      if(irr) html += `<div class="tt-sep"></div>` + irr.replace("à ce prix", "à ce cours");
     } else if(candle){
       const ch = candle.close - candle.open;
       const chPct = candle.open ? ch / candle.open * 100 : 0;
