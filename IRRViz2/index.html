@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>IRRViz 2 — Prix seuils de rendement</title>
+<meta name="description" content="Visualisez le prix de revente nécessaire pour atteindre un rendement annuel net cible (TRI), à partir de vos transactions." />
+<meta name="color-scheme" content="dark light" />
+<meta name="theme-color" content="#0b0e14" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0e14'/%3E%3Cpath d='M5 25 C11 23 15 17 27 7' stroke='%236fcf5a' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M5 25 C12 24 17 20 27 15' stroke='%23f0b429' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M5 25 C13 25 19 23 27 22' stroke='%23dd6a2e' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="css/style.css" />
+<script>
+  /* Applique le thème avant le premier rendu pour éviter un flash de couleurs. */
+  (function(){
+    try{
+      var s = JSON.parse(localStorage.getItem("irrviz2-state-v1") || "null");
+      var t = s && s.ui && s.ui.theme;
+      if(t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+    }catch(e){}
+  })();
+</script>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 010 11H11"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 000 11H13"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></symbol>
+    <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" /><path d="M12 3a9 9 0 010 18z" fill="currentColor"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M9.3 9.2a2.8 2.8 0 015.4 1c0 1.9-2.7 2.4-2.7 4.1"/><path d="M12 17.6h.01"/></symbol>
+    <symbol id="i-data" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.8"/><path d="M4.5 5.5v6.2c0 1.6 3.4 2.8 7.5 2.8s7.5-1.2 7.5-2.8V5.5"/><path d="M4.5 11.7v6.5c0 1.6 3.4 2.8 7.5 2.8s7.5-1.2 7.5-2.8v-6.5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V5a1 1 0 011-1h4M15 4h4a1 1 0 011 1v4M20 15v4a1 1 0 01-1 1h-4M9 20H5a1 1 0 01-1-1v-4"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.2"/><path d="M15.5 8.5V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7.5a2 2 0 002 2h2.5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5a1.5 1.5 0 001.5 1.4h6a1.5 1.5 0 001.5-1.4l1-12.5"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1.5 1.5 0 001.5 1.5h13A1.5 1.5 0 0020 19v-3"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 16v3a1.5 1.5 0 001.5 1.5h13A1.5 1.5 0 0020 19v-3"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5L2.5 20h19z"/><path d="M12 10v4.5M12 17.3h.01"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
+  </defs>
+</svg>
+
+<div id="app">
+
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="icon-btn" id="btnPanel" title="Afficher / masquer le panneau (P)" aria-label="Afficher ou masquer le panneau" aria-controls="sidePanel">
+        <svg class="ic"><use href="#i-panel"/></svg>
+      </button>
+      <a class="brand" href="./" title="IRRViz 2">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M4 26 C11 24 16 17 28 6" class="bm-a"/>
+          <path d="M4 26 C12 25 18 20 28 14" class="bm-b"/>
+          <path d="M4 26 C13 26 20 24 28 22" class="bm-c"/>
+        </svg>
+        <span class="brand-text">
+          <span class="brand-name">IRRViz <span class="badge-v">2</span></span>
+          <span class="brand-sub">Prix seuils de rendement annuel net</span>
+        </span>
+      </a>
+    </div>
+    <div class="topbar-actions">
+      <div class="btn-group" role="group" aria-label="Historique">
+        <button class="icon-btn" id="btnUndo" title="Annuler (Ctrl+Z)" aria-label="Annuler" disabled><svg class="ic"><use href="#i-undo"/></svg></button>
+        <button class="icon-btn" id="btnRedo" title="Rétablir (Ctrl+Maj+Z)" aria-label="Rétablir" disabled><svg class="ic"><use href="#i-redo"/></svg></button>
+      </div>
+      <div class="menu" id="dataMenu">
+        <button class="btn" id="btnDataMenu" aria-haspopup="menu" aria-expanded="false">
+          <svg class="ic"><use href="#i-data"/></svg><span class="hide-sm">Données</span><svg class="ic ic-sm"><use href="#i-chevron"/></svg>
+        </button>
+        <div class="menu-list" role="menu" hidden>
+          <button role="menuitem" data-action="import"><svg class="ic"><use href="#i-upload"/></svg>Importer des transactions (CSV)…<kbd>I</kbd></button>
+          <button role="menuitem" data-action="export-csv"><svg class="ic"><use href="#i-download"/></svg>Exporter les transactions (CSV)</button>
+          <div class="menu-sep"></div>
+          <button role="menuitem" data-action="backup"><svg class="ic"><use href="#i-download"/></svg>Sauvegarde complète (JSON)</button>
+          <button role="menuitem" data-action="restore"><svg class="ic"><use href="#i-upload"/></svg>Restaurer une sauvegarde…</button>
+          <div class="menu-sep"></div>
+          <button role="menuitem" data-action="sample"><svg class="ic"><use href="#i-refresh"/></svg>Charger l'exemple</button>
+          <button role="menuitem" data-action="clear" class="danger"><svg class="ic"><use href="#i-trash"/></svg>Effacer toutes les transactions</button>
+        </div>
+      </div>
+      <button class="icon-btn" id="btnTheme" title="Thème" aria-label="Changer de thème"><svg class="ic"><use href="#i-auto"/></svg></button>
+      <button class="icon-btn" id="btnHelp" title="Aide et raccourcis (?)" aria-label="Aide"><svg class="ic"><use href="#i-help"/></svg></button>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <aside class="panel" id="sidePanel" aria-label="Paramètres">
+
+      <details class="card" data-card="tx" open>
+        <summary class="card-head">
+          <h2>Transactions <span class="count" id="txCount">0</span></h2>
+          <svg class="ic chev"><use href="#i-chevron"/></svg>
+        </summary>
+        <div class="card-body">
+          <div class="tx-toolbar">
+            <button class="btn small primary" id="btnAddTx" title="Ajouter une transaction (N)"><svg class="ic"><use href="#i-plus"/></svg>Ajouter</button>
+            <button class="btn small" id="btnImportOpen" title="Importer un CSV (I)"><svg class="ic"><use href="#i-upload"/></svg>Importer</button>
+          </div>
+          <div class="tx-list" id="txList" role="list"></div>
+          <p class="hint">Montants <b>nets de frais</b> en euros : négatif = décaissement (achat, frais), positif = encaissement (vente, dividende). Quantité positive à l'achat, négative à la vente, nulle pour un simple flux.</p>
+        </div>
+      </details>
+
+      <details class="card" data-card="thresholds" open>
+        <summary class="card-head">
+          <h2>Seuils de rendement annuel</h2>
+          <svg class="ic chev"><use href="#i-chevron"/></svg>
+        </summary>
+        <div class="card-body">
+          <div class="chips" id="thresholdChips"></div>
+          <form class="inline-form" id="thresholdForm" autocomplete="off">
+            <div class="input-affix">
+              <input type="text" inputmode="decimal" id="newThreshold" placeholder="ex : 15" aria-label="Nouveau seuil en pourcentage" />
+              <span class="suffix">%</span>
+            </div>
+            <button class="btn small" type="submit"><svg class="ic"><use href="#i-plus"/></svg>Ajouter</button>
+            <button class="btn small ghost" type="button" id="btnResetThresholds" title="Revenir aux seuils par défaut">Défaut</button>
+          </form>
+          <p class="hint">Cliquez sur la pastille de couleur (ou sur la légende) pour masquer / afficher une courbe.</p>
+        </div>
+      </details>
+
+      <details class="card" data-card="settings" open>
+        <summary class="card-head">
+          <h2>Paramètres</h2>
+          <svg class="ic chev"><use href="#i-chevron"/></svg>
+        </summary>
+        <div class="card-body">
+          <label class="field">
+            <span class="field-label">Frais de vente</span>
+            <span class="input-affix">
+              <input type="text" inputmode="decimal" id="feeInput" aria-describedby="feeHint" />
+              <span class="suffix">%</span>
+            </span>
+          </label>
+          <p class="hint" id="feeHint">Appliqués à la revente hypothétique : les prix seuils restent ainsi comparables au cours de marché.</p>
+
+          <label class="field">
+            <span class="field-label">Horizon de projection</span>
+            <input type="date" id="horizonInput" />
+          </label>
+          <div class="quickrange" id="quickRange" role="group" aria-label="Raccourcis d'horizon">
+            <button class="btn tiny" data-m="6">+6 mois</button>
+            <button class="btn tiny" data-m="12">+1 an</button>
+            <button class="btn tiny" data-m="24">+2 ans</button>
+            <button class="btn tiny" data-m="60">+5 ans</button>
+            <button class="btn tiny" data-m="120">+10 ans</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="card" data-card="asset">
+        <summary class="card-head">
+          <h2>Cours de l'actif <span class="opt">optionnel</span></h2>
+          <span class="proxy-dot" id="proxyDot" title="État du proxy local"></span>
+          <svg class="ic chev"><use href="#i-chevron"/></svg>
+        </summary>
+        <div class="card-body">
+          <form class="inline-form" id="assetForm" autocomplete="off">
+            <input type="text" id="tickerInput" placeholder="Symbole Yahoo : AAPL, MC.PA, BTC-EUR…" aria-label="Symbole Yahoo Finance" spellcheck="false" />
+            <button class="btn small primary" type="submit" id="btnLoadAsset">Charger</button>
+            <button class="icon-btn small" type="button" id="btnClearAsset" title="Retirer l'actif" aria-label="Retirer l'actif"><svg class="ic"><use href="#i-x"/></svg></button>
+          </form>
+          <div class="asset-status" id="assetStatus" aria-live="polite"></div>
+          <details class="sub">
+            <summary>Proxy local</summary>
+            <p class="hint">Yahoo Finance n'autorise pas les appels directs depuis le navigateur. Lancez le proxy fourni : <code>python proxy.py</code> dans le dossier IRRViz2.</p>
+            <label class="field row">
+              <span class="field-label">Port</span>
+              <input type="text" inputmode="numeric" id="proxyPort" class="w-port" />
+              <button class="btn tiny" type="button" id="btnCheckProxy">Tester</button>
+            </label>
+          </details>
+        </div>
+      </details>
+
+      <footer class="panel-foot">
+        <span>Données stockées uniquement dans ce navigateur.</span>
+        <a href="../IRRViz/">Version 1</a>
+      </footer>
+    </aside>
+
+    <div class="backdrop" id="backdrop" hidden></div>
+
+    <main class="main">
+      <section class="kpis" id="kpis" aria-label="Synthèse de la position"></section>
+
+      <section class="chart-card">
+        <div class="chart-toolbar">
+          <div class="legend" id="legend"></div>
+          <div class="chart-actions">
+            <div class="toggles" role="group" aria-label="Affichage">
+              <button class="toggle" id="tglBands" aria-pressed="true" title="Zones colorées entre les seuils (Z)">Zones</button>
+              <button class="toggle" id="tglLabels" aria-pressed="true" title="Étiquettes de prix sur la ligne « aujourd'hui » (L)">Étiquettes</button>
+              <button class="toggle" id="tglCandles" aria-pressed="true" title="Cours de l'actif (C)" hidden>Cours</button>
+            </div>
+            <div class="btn-group" role="group" aria-label="Zoom">
+              <button class="icon-btn small" id="btnZoomOut" title="Dézoomer (−)" aria-label="Dézoomer"><svg class="ic"><use href="#i-minus"/></svg></button>
+              <button class="icon-btn small" id="btnZoomIn" title="Zoomer (+)" aria-label="Zoomer"><svg class="ic"><use href="#i-plus"/></svg></button>
+              <button class="icon-btn small" id="btnResetView" title="Vue d'ensemble (0 ou double-clic)" aria-label="Réinitialiser la vue"><svg class="ic"><use href="#i-fit"/></svg></button>
+            </div>
+          </div>
+        </div>
+        <div class="chart-wrap" id="chartWrap" tabindex="0" aria-label="Graphique des prix seuils. Flèches : déplacer, + et − : zoomer.">
+          <svg id="chartSvg" role="img" aria-label="Courbes de prix seuil par rendement annuel cible"></svg>
+          <div id="tooltip" class="tooltip hidden" role="status"></div>
+          <div id="emptyState" class="empty-state hidden">
+            <svg class="empty-art" viewBox="0 0 120 70" aria-hidden="true">
+              <path d="M6 62 C40 58 60 36 114 8" class="bm-a"/>
+              <path d="M6 62 C44 60 70 48 114 30" class="bm-b"/>
+              <path d="M6 62 C48 62 78 58 114 52" class="bm-c"/>
+            </svg>
+            <h3>Aucune transaction</h3>
+            <p>Ajoutez vos achats et ventes pour voir à quel prix revendre afin d'atteindre chaque rendement annuel cible.</p>
+            <div class="empty-actions">
+              <button class="btn primary" data-empty="add"><svg class="ic"><use href="#i-plus"/></svg>Ajouter une transaction</button>
+              <button class="btn" data-empty="import"><svg class="ic"><use href="#i-upload"/></svg>Importer un CSV</button>
+              <button class="btn ghost" data-empty="sample">Charger l'exemple</button>
+            </div>
+          </div>
+        </div>
+        <p class="chart-hint">
+          <span><kbd>Molette</kbd> zoom temps</span>
+          <span><kbd>Maj</kbd>+<kbd>molette</kbd> ou axe des prix : zoom prix</span>
+          <span><kbd>Glisser</kbd> déplacer</span>
+          <span><kbd>Double-clic</kbd> vue d'ensemble</span>
+        </p>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- Import CSV -->
+<dialog id="importDialog" class="dialog wide" aria-labelledby="importTitle">
+  <form method="dialog" class="dialog-inner" id="importForm">
+    <header class="dialog-head">
+      <h2 id="importTitle">Importer des transactions</h2>
+      <button class="icon-btn" value="cancel" aria-label="Fermer"><svg class="ic"><use href="#i-x"/></svg></button>
+    </header>
+    <div class="dialog-body">
+      <div class="dropzone" id="dropzone">
+        <svg class="ic ic-lg"><use href="#i-upload"/></svg>
+        <p><b>Déposez un fichier CSV</b> ici ou <label class="link">parcourez<input type="file" id="csvFile" accept=".csv,.txt,text/csv,text/plain" hidden /></label>, ou collez son contenu ci-dessous.</p>
+      </div>
+      <textarea id="csvText" rows="6" spellcheck="false" placeholder="date ; montant ; quantité&#10;01/01/2026;-1000,00;1000&#10;01/02/2026;500,00;-400"></textarea>
+      <p class="hint">Trois colonnes : <code>date</code> (jj/mm/aaaa ou aaaa-mm-jj), <code>montant</code> net en € et <code>quantité</code>. Séparateur <code>;</code>, tabulation ou <code>,</code>. Une éventuelle ligne d'en-tête est ignorée.</p>
+      <div class="import-preview" id="importPreview"></div>
+      <div class="import-options">
+        <label class="radio"><input type="radio" name="importMode" value="append" checked /> Ajouter aux transactions existantes</label>
+        <label class="radio"><input type="radio" name="importMode" value="replace" /> Remplacer les transactions existantes</label>
+        <label class="check"><input type="checkbox" id="importDedupe" checked /> Ignorer les doublons exacts</label>
+      </div>
+    </div>
+    <footer class="dialog-foot">
+      <button class="btn ghost" value="cancel">Annuler</button>
+      <button class="btn primary" id="btnImportConfirm" value="default" disabled>Importer</button>
+    </footer>
+  </form>
+</dialog>
+
+<!-- Aide -->
+<dialog id="helpDialog" class="dialog wide" aria-labelledby="helpTitle">
+  <div class="dialog-inner">
+    <header class="dialog-head">
+      <h2 id="helpTitle">Comment lire IRRViz</h2>
+      <button class="icon-btn" data-close aria-label="Fermer"><svg class="ic"><use href="#i-x"/></svg></button>
+    </header>
+    <div class="dialog-body help">
+      <p>Chaque courbe indique, jour après jour, le <b>prix unitaire de revente</b> qui vous donnerait exactement le <b>rendement annuel</b> correspondant (TRI / XIRR) si vous vendiez toute votre position à cette date, frais de vente inclus.</p>
+      <ul>
+        <li>Tant que le cours de marché est <b>au-dessus</b> d'une courbe, vous faites mieux que ce rendement.</li>
+        <li>La courbe 0 % est votre <b>seuil de rentabilité</b> : en dessous, vous perdez de l'argent.</li>
+        <li>Survolez le graphique : l'infobulle affiche le <b>TRI obtenu</b> si vous vendiez au prix pointé.</li>
+        <li>Les zones hachurées correspondent aux périodes où la position est soldée.</li>
+      </ul>
+      <h3>Raccourcis clavier</h3>
+      <div class="shortcuts">
+        <div><kbd>N</kbd><span>Nouvelle transaction</span></div>
+        <div><kbd>I</kbd><span>Importer un CSV</span></div>
+        <div><kbd>Ctrl</kbd>+<kbd>Z</kbd><span>Annuler</span></div>
+        <div><kbd>Ctrl</kbd>+<kbd>Maj</kbd>+<kbd>Z</kbd><span>Rétablir</span></div>
+        <div><kbd>+</kbd> / <kbd>−</kbd><span>Zoomer / dézoomer</span></div>
+        <div><kbd>←</kbd> <kbd>→</kbd><span>Déplacer dans le temps (graphique sélectionné)</span></div>
+        <div><kbd>0</kbd><span>Vue d'ensemble</span></div>
+        <div><kbd>Z</kbd> <kbd>L</kbd> <kbd>C</kbd><span>Zones, étiquettes, cours</span></div>
+        <div><kbd>P</kbd><span>Panneau latéral</span></div>
+        <div><kbd>T</kbd><span>Thème clair / sombre / auto</span></div>
+        <div><kbd>?</kbd><span>Cette aide</span></div>
+      </div>
+      <h3>Graphique</h3>
+      <div class="shortcuts">
+        <div><kbd>Molette</kbd><span>Zoom sur le temps (pavé tactile : pincer)</span></div>
+        <div><kbd>Maj</kbd>+<kbd>molette</kbd><span>Zoom sur les prix (ou molette sur l'axe des prix)</span></div>
+        <div><kbd>Glisser</kbd><span>Déplacer ; sur l'axe des prix : étirer l'échelle</span></div>
+        <div><kbd>Double-clic</kbd><span>Vue d'ensemble (sur l'axe des prix : échelle auto)</span></div>
+        <div><kbd>Clic</kbd><span>Sur un point : retrouver la transaction</span></div>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<input type="file" id="restoreFile" accept=".json,application/json" hidden />
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="js/util.js"></script>
+<script src="js/model.js"></script>
+<script src="js/store.js"></script>
+<script src="js/asset.js"></script>
+<script src="js/chart.js"></script>
+<script src="js/csv.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
