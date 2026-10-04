@@ -50,6 +50,8 @@
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.2"/><path d="M15.5 8.5V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7.5a2 2 0 002 2h2.5"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5a1.5 1.5 0 001.5 1.4h6a1.5 1.5 0 001.5-1.4l1-12.5"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1.5 1.5 0 001.5 1.5h13A1.5 1.5 0 0020 19v-3"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 3.5v11M8 7.5l4-4 4 4"/><path d="M8.5 10.5H6.5a1.5 1.5 0 00-1.5 1.5v7a1.5 1.5 0 001.5 1.5h11a1.5 1.5 0 001.5-1.5v-7a1.5 1.5 0 00-1.5-1.5h-2"/></symbol>
+    <symbol id="i-add-square" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M12 8.5v7M8.5 12h7"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 16v3a1.5 1.5 0 001.5 1.5h13A1.5 1.5 0 0020 19v-3"/></symbol>
     <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5L2.5 20h19z"/><path d="M12 10v4.5M12 17.3h.01"/></symbol>
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
@@ -113,7 +115,7 @@
         </div>
       </div>
       <span class="offline-badge" id="offlineBadge" role="status" title="Pas de connexion : l'application fonctionne normalement, seuls les cours Yahoo ne peuvent pas être téléchargés." hidden><span class="dot"></span>Hors ligne</span>
-      <button class="btn small install-btn" id="btnInstall" title="Installer IRRViz comme une application (fenêtre dédiée, utilisable hors ligne)" hidden><svg class="ic"><use href="#i-download"/></svg><span class="hide-sm">Installer</span></button>
+      <button class="btn small install-btn" id="btnInstall" title="Installer IRRViz comme une application (fenêtre dédiée, utilisable hors ligne)" hidden><svg class="ic"><use href="#i-download"/></svg><span class="hide-xs">Installer</span></button>
       <button class="icon-btn" id="btnTheme" title="Thème" aria-label="Changer de thème"><svg class="ic"><use href="#i-auto"/></svg></button>
       <button class="icon-btn" id="btnHelp" title="Aide et raccourcis (?)" aria-label="Aide"><svg class="ic"><use href="#i-help"/></svg></button>
     </div>
@@ -320,6 +322,38 @@
   </form>
 </dialog>
 
+<!-- Guide d'installation (Safari iPhone / iPad / Mac : pas d'invite d'installation) -->
+<dialog id="installDialog" class="dialog" aria-labelledby="installTitle">
+  <div class="dialog-inner">
+    <header class="dialog-head">
+      <h2 id="installTitle">Installer IRRViz</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Fermer"><svg class="ic"><use href="#i-x"/></svg></button>
+    </header>
+    <div class="dialog-body install-guide">
+      <p>Installé, IRRViz s'ouvre en plein écran depuis son icône et fonctionne <b>sans connexion</b>.</p>
+      <ol class="steps" data-platform="ios">
+        <li><span class="step-ic"><svg class="ic"><use href="#i-share"/></svg></span><span>Touchez le bouton <b>Partager</b> du navigateur <span class="muted">(en haut à droite sur iPad, en bas sur iPhone ; dans la barre d'adresse avec Chrome)</span>.</span></li>
+        <li><span class="step-ic"><svg class="ic"><use href="#i-add-square"/></svg></span><span>Faites défiler la liste et choisissez <b>Sur l'écran d'accueil</b>.</span></li>
+        <li><span class="step-ic"><svg class="ic"><use href="#i-check"/></svg></span><span>Touchez <b>Ajouter</b> : l'icône IRRViz apparaît sur votre écran d'accueil.</span></li>
+      </ol>
+      <ol class="steps" data-platform="mac" hidden>
+        <li><span class="step-ic"><svg class="ic"><use href="#i-share"/></svg></span><span>Menu <b>Fichier</b> › <b>Ajouter au Dock…</b> <span class="muted">(ou bouton Partager › Ajouter au Dock)</span>.</span></li>
+        <li><span class="step-ic"><svg class="ic"><use href="#i-check"/></svg></span><span>Confirmez avec <b>Ajouter</b> : IRRViz s'ouvre ensuite depuis le Dock, dans sa propre fenêtre.</span></li>
+      </ol>
+      <div class="install-note" data-platform="ios">
+        <svg class="ic"><use href="#i-warn"/></svg>
+        <div>
+          <p><b>Vos données ne suivent pas automatiquement.</b> Sur iPhone et iPad, l'application installée a son propre stockage, séparé de celui du navigateur. Exportez une sauvegarde maintenant, puis ouvrez-la depuis l'application installée : <i>Données › Restaurer une sauvegarde</i>.</p>
+          <button class="btn small" type="button" data-act="backup"><svg class="ic"><use href="#i-download"/></svg>Exporter une sauvegarde</button>
+        </div>
+      </div>
+    </div>
+    <footer class="dialog-foot">
+      <button class="btn primary" type="button" data-close>Compris</button>
+    </footer>
+  </div>
+</dialog>
+
 <!-- Aide -->
 <dialog id="helpDialog" class="dialog wide" aria-labelledby="helpTitle">
   <div class="dialog-inner">
@@ -341,8 +375,8 @@
       <p>Une fois installé, IRRViz s'ouvre dans sa propre fenêtre et <b>fonctionne hors ligne</b> : seul le téléchargement des cours Yahoo demande une connexion. Vos données restent stockées dans ce navigateur.</p>
       <ul>
         <li><b>Chrome, Edge</b> (ordinateur, Android) : bouton <b>Installer</b> en haut de la page, ou menu du navigateur › <i>Installer IRRViz</i>.</li>
-        <li><b>Safari sur iPhone / iPad</b> : bouton Partager › <i>Sur l'écran d'accueil</i>. L'application installée y dispose de son propre stockage : exportez une sauvegarde JSON depuis Safari (menu Données) puis restaurez-la dans l'application.</li>
-        <li><b>Safari sur Mac</b> : menu Fichier › <i>Ajouter au Dock</i>.</li>
+        <li><b>iPhone / iPad</b> : Safari ne propose pas d'invite d'installation ; le bouton <b>Installer</b> en haut de la page affiche un guide pas à pas (bouton Partager › <i>Sur l'écran d'accueil</i>). L'application installée y dispose de son propre stockage : exportez une sauvegarde JSON depuis Safari (menu Données) puis restaurez-la dans l'application.</li>
+        <li><b>Safari sur Mac</b> (version 17 ou plus) : menu Fichier › <i>Ajouter au Dock</i> — le bouton <b>Installer</b> rappelle la marche à suivre.</li>
       </ul>
       <h3>Raccourcis clavier</h3>
       <div class="shortcuts">

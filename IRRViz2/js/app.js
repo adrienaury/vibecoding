@@ -39,7 +39,7 @@ const el = {
   importDialog: $("importDialog"), importForm: $("importForm"), csvText: $("csvText"), csvFile: $("csvFile"),
   dropzone: $("dropzone"), importPreview: $("importPreview"), importDedupe: $("importDedupe"), btnImportConfirm: $("btnImportConfirm"),
   helpDialog: $("helpDialog"), restoreFile: $("restoreFile"), toasts: $("toasts"),
-  btnInstall: $("btnInstall"), offlineBadge: $("offlineBadge"),
+  btnInstall: $("btnInstall"), offlineBadge: $("offlineBadge"), installDialog: $("installDialog"),
 };
 
 const mqLight = window.matchMedia("(prefers-color-scheme: light)");
@@ -1009,7 +1009,9 @@ function download(filename, content, type){
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove();
+  // Quand une fenêtre modale est ouverte, le reste de la page est inerte : le lien doit être dans la fenêtre.
+  (document.querySelector("dialog[open]") || document.body).appendChild(a);
+  a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
@@ -1328,6 +1330,26 @@ function initPositions(){
 
 let installPrompt = null;
 
+/* Safari (iPhone, iPad, Mac) ne propose jamais d'invite d'installation (pas d'événement
+   beforeinstallprompt) : l'installation passe par le menu Partager. On affiche alors
+   le bouton « Installer », qui ouvre un guide pas à pas. Renvoie "ios", "mac" ou null. */
+function manualInstallPlatform(){
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  if(standalone || !/^https?:$/.test(location.protocol)) return null;
+  const ua = navigator.userAgent;
+  // iPadOS se présente comme un Mac : on le reconnaît à son écran tactile.
+  if(/iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return "ios";
+  const safari = /Macintosh/.test(ua) && /Safari\//.test(ua) && !/Chrome|Chromium|Edg|OPR|Firefox/.test(ua);
+  const version = /Version\/(\d+)/.exec(ua);
+  if(safari && version && +version[1] >= 17) return "mac"; // « Ajouter au Dock » : Safari 17+
+  return null;
+}
+
+function openInstallGuide(platform){
+  el.installDialog.querySelectorAll("[data-platform]").forEach(n => { n.hidden = n.dataset.platform !== platform; });
+  el.installDialog.showModal();
+}
+
 function initPwa(){
   // Le service worker n'est disponible qu'en http(s) — pas en ouvrant le fichier depuis le disque.
   if("serviceWorker" in navigator && /^https?:$/.test(location.protocol)){
@@ -1346,8 +1368,17 @@ function initPwa(){
     el.btnInstall.hidden = true;
     toast("IRRViz est installé : retrouvez-le parmi vos applications.", { type: "success", timeout: 5000 });
   });
+  const manualPlatform = manualInstallPlatform();
+  if(manualPlatform) el.btnInstall.hidden = false;
+  el.installDialog.addEventListener("click", e => {
+    if(e.target === el.installDialog || e.target.closest("[data-close]")) el.installDialog.close();
+    if(e.target.closest('[data-act="backup"]')) runAction("backup");
+  });
   el.btnInstall.addEventListener("click", async () => {
-    if(!installPrompt) return;
+    if(!installPrompt){
+      if(manualPlatform) openInstallGuide(manualPlatform);
+      return;
+    }
     const prompt = installPrompt;
     installPrompt = null;
     el.btnInstall.hidden = true;

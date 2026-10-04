@@ -8,7 +8,12 @@ Même stack que la v1 : site **100 % statique** (HTML, CSS, JavaScript sans dép
 
 IRRViz 2 est une **application web progressive (PWA)** : servie en `https://` (ou depuis `localhost`), elle peut être installée et fonctionne ensuite **sans connexion**.
 
-- **Installer** : bouton « Installer » dans la barre du haut (Chrome, Edge — ordinateur et Android), menu Partager › *Sur l'écran d'accueil* (Safari iPhone / iPad), menu Fichier › *Ajouter au Dock* (Safari Mac). L'application s'ouvre alors dans sa propre fenêtre, avec son icône.
+- **Installer** : bouton « Installer » dans la barre du haut.
+  - Chrome, Edge (ordinateur, Android) : il ouvre l'invite d'installation du navigateur.
+  - iPhone / iPad et Safari Mac 17+ : ces navigateurs n'ont pas d'invite d'installation (pas d'événement `beforeinstallprompt`) ; le bouton ouvre un guide pas à pas (Partager › *Sur l'écran d'accueil*, ou Fichier › *Ajouter au Dock*). Sur iPhone / iPad, le guide propose aussi d'exporter une sauvegarde, à restaurer dans l'application installée.
+  - Le bouton est masqué quand l'application est déjà ouverte en mode installé.
+
+  L'application s'ouvre alors dans sa propre fenêtre, avec son icône.
 - **Hors ligne** : tout fonctionne (saisie, graphique, import / export, cours importés ou en cache) ; seul le téléchargement des cours Yahoo demande une connexion. Un badge « Hors ligne » l'indique, et les cours Yahoo en cache sont rafraîchis au retour de la connexion.
 - **Mises à jour** : le service worker (`sw.js`) charge les fichiers depuis le réseau en priorité et ne sert le cache que hors ligne ou si le réseau ne répond pas en 4 s. Une nouvelle version publiée est donc visible dès le rechargement suivant, sans mélange d'anciens et de nouveaux fichiers.
 - Les données restent dans le `localStorage` du navigateur. Sur iPhone / iPad, l'application installée a **son propre stockage**, séparé de Safari : exportez une sauvegarde JSON depuis Safari puis restaurez-la dans l'application.
