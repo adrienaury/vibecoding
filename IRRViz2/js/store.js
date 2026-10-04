@@ -14,7 +14,8 @@ const IRR = root.IRR = root.IRR || {};
 const U = IRR.util || (typeof require !== "undefined" ? require("./util.js") : null);
 
 const STORAGE_KEY = "irrviz2-app-v2";
-const PRICES_PREFIX = "irrviz2-prices-v2:";       // + id de position
+const PRICES_PREFIX = "irrviz2-prices-v2:";       // + id de position : cache Yahoo Finance
+const MANUAL_PREFIX = "irrviz2-manual-v2:";       // + id de position : historique de cours importé
 const LEGACY_KEY = "irrviz2-state-v1";            // IRRViz 2, version mono-position
 const LEGACY_CANDLES_KEY = "irrviz2-candles-v1";
 const V1_STORAGE_KEY = "mwviz-state-v1";          // IRRViz v1 (même origine)
@@ -52,6 +53,7 @@ function defaultPosition(name = "Ma position"){
     feePercent: 0.35,
     horizonIso: null,
     assetTicker: "",
+    priceSource: "yahoo",   // origine des cours affichés : "yahoo" | "manual"
     view: null,             // zoom/pan persisté { start, end, yMin, yMax }
   };
 }
@@ -98,6 +100,7 @@ function sanitizePosition(raw, fallbackName = "Ma position"){
   if(Number.isFinite(+raw.feePercent)) s.feePercent = U.clamp(+raw.feePercent, 0, 99);
   if(typeof raw.horizonIso === "string" && Number.isFinite(U.isoToMs(raw.horizonIso))) s.horizonIso = raw.horizonIso;
   if(typeof raw.assetTicker === "string") s.assetTicker = raw.assetTicker.trim().toUpperCase();
+  if(raw.priceSource === "manual") s.priceSource = "manual";
   const v = raw.view;
   if(v && [v.start, v.end].every(Number.isFinite) && v.end > v.start){
     s.view = { start: v.start, end: v.end };
@@ -186,6 +189,46 @@ function writeJson(key, value){
 }
 function removeKey(key){
   try{ localStorage.removeItem(key); }catch(e){ /* ignore */ }
+}
+
+/* Données volumineuses rangées hors de l'état principal, une clé par position :
+   cache Yahoo et historique importé. */
+const POS_PREFIXES = { prices: PRICES_PREFIX, manual: MANUAL_PREFIX };
+function readPosData(id){
+  const o = {};
+  Object.entries(POS_PREFIXES).forEach(([k, pre]) => { o[k] = readJson(pre + id); });
+  return o;
+}
+function writePosData(id, data){
+  if(!data) return;
+  Object.entries(POS_PREFIXES).forEach(([k, pre]) => { if(data[k]) writeJson(pre + id, data[k]); });
+}
+function removePosData(id){
+  Object.values(POS_PREFIXES).forEach(pre => removeKey(pre + id));
+}
+
+/* Historique importé : { name, fileName, kind: "ohlc" | "close", importedAt, rows }
+   où rows = [[s, o, h, l, c], …] (ohlc) ou [[s, c], …] (close). */
+function encodeManual(rec){
+  const round = v => Math.round(v * 1e6) / 1e6;
+  return {
+    name: rec.name, fileName: rec.fileName || null, kind: rec.kind, importedAt: rec.importedAt || Date.now(),
+    rows: rec.candles.map(c => rec.kind === "ohlc"
+      ? [Math.round(c.ms / 1000), round(c.open), round(c.high), round(c.low), round(c.close)]
+      : [Math.round(c.ms / 1000), round(c.close)]),
+  };
+}
+function decodeManual(raw){
+  if(!raw || !Array.isArray(raw.rows) || !raw.rows.length) return null;
+  const kind = raw.kind === "ohlc" ? "ohlc" : "close";
+  const candles = raw.rows
+    .filter(r => Array.isArray(r) && r.length >= 2 && r.every(Number.isFinite))
+    .map(r => kind === "ohlc" && r.length >= 5
+      ? { ms: r[0] * 1000, open: r[1], high: r[2], low: r[3], close: r[4] }
+      : { ms: r[0] * 1000, open: r[r.length - 1], high: r[r.length - 1], low: r[r.length - 1], close: r[r.length - 1] })
+    .sort((a, b) => a.ms - b.ms);
+  if(!candles.length) return null;
+  return { name: typeof raw.name === "string" && raw.name ? raw.name : "Cours importés", fileName: raw.fileName || null, kind, importedAt: raw.importedAt || null, candles };
 }
 
 function loadSampleInto(pos){
@@ -382,8 +425,7 @@ function createStore(){
       copy.autoName = false;
       copy.createdAt = Date.now();
       copy.transactions.forEach(t => { t.id = U.makeId(); });
-      const prices = readJson(PRICES_PREFIX + src.id);
-      if(prices) writeJson(PRICES_PREFIX + copy.id, prices);
+      writePosData(copy.id, readPosData(src.id));
       return insertPosition(copy, app.positions.indexOf(src) + 1);
     },
 
@@ -418,12 +460,12 @@ function createStore(){
         pos: JSON.parse(JSON.stringify(pos)),
         index,
         wasActive: id === app.activeId,
-        prices: readJson(PRICES_PREFIX + id),
+        data: readPosData(id),
         history: history.get(id) || null,
       };
       app.positions.splice(index, 1);
       history.delete(id);
-      removeKey(PRICES_PREFIX + id);
+      removePosData(id);
       if(!app.positions.length){
         const fresh = defaultPosition("Ma position");
         app.positions.push(fresh);
@@ -440,7 +482,7 @@ function createStore(){
       if(app.positions.length === 1 && !app.positions[0].transactions.length && app.positions[0].autoName){
         app.positions = [];
       }
-      if(token.prices) writeJson(PRICES_PREFIX + token.pos.id, token.prices);
+      writePosData(token.pos.id, token.data);
       if(token.history) history.set(token.pos.id, token.history);
       const pos = sanitizePosition(token.pos);
       app.positions.splice(Math.min(token.index, app.positions.length), 0, pos);
@@ -463,12 +505,16 @@ function createStore(){
 
     backup(){
       persistSoon.flush();
-      const prices = {};
-      app.positions.forEach(p => { const c = readJson(PRICES_PREFIX + p.id); if(c) prices[p.id] = c; });
+      const prices = {}, manualPrices = {};
+      app.positions.forEach(p => {
+        const d = readPosData(p.id);
+        if(d.prices) prices[p.id] = d.prices;
+        if(d.manual) manualPrices[p.id] = d.manual;
+      });
       return {
         app: "IRRViz2", version: 2, exportedAt: new Date().toISOString(),
         state: JSON.parse(JSON.stringify(app)),
-        prices,
+        prices, manualPrices,
       };
     },
 
@@ -480,22 +526,21 @@ function createStore(){
       const data = raw && raw.state ? raw.state : raw;
       const full = sanitizeApp(data);
       if(full && data && Array.isArray(data.positions)){
-        const previous = { app: JSON.parse(JSON.stringify(app)), prices: {} };
-        app.positions.forEach(p => { previous.prices[p.id] = readJson(PRICES_PREFIX + p.id); removeKey(PRICES_PREFIX + p.id); });
+        const previous = { app: JSON.parse(JSON.stringify(app)), data: {} };
+        app.positions.forEach(p => { previous.data[p.id] = readPosData(p.id); removePosData(p.id); });
         app = full;
         history.clear();
-        if(raw.prices && typeof raw.prices === "object"){
-          app.positions.forEach(p => { if(raw.prices[p.id]) writeJson(PRICES_PREFIX + p.id, raw.prices[p.id]); });
-        }
+        const pick = (map, id) => (map && typeof map === "object" ? map[id] : null) || null;
+        app.positions.forEach(p => writePosData(p.id, { prices: pick(raw.prices, p.id), manual: pick(raw.manualPrices, p.id) }));
         persist();
         emit("switch");
         return {
           mode: "all",
           count: app.positions.length,
           undo: () => {
-            app.positions.forEach(p => removeKey(PRICES_PREFIX + p.id));
+            app.positions.forEach(p => removePosData(p.id));
             app = previous.app;
-            Object.entries(previous.prices).forEach(([id, c]) => { if(c) writeJson(PRICES_PREFIX + id, c); });
+            Object.entries(previous.data).forEach(([id, d]) => writePosData(id, d));
             history.clear();
             persist();
             emit("switch");
@@ -535,10 +580,24 @@ function createStore(){
     clearCandleCache(posId = app.activeId){
       removeKey(PRICES_PREFIX + posId);
     },
+
+    /* Historique de cours importé (CSV), propre à chaque position.
+       readManualPrices → { name, fileName, kind, importedAt, candles } | null */
+    readManualPrices(posId = app.activeId){
+      return decodeManual(readJson(MANUAL_PREFIX + posId));
+    },
+    // Renvoie false si le navigateur refuse l'écriture (quota localStorage dépassé).
+    writeManualPrices(rec, posId = app.activeId){
+      if(!app.positions.some(p => p.id === posId)) return false;
+      return writeJson(MANUAL_PREFIX + posId, encodeManual(rec));
+    },
+    clearManualPrices(posId = app.activeId){
+      removeKey(MANUAL_PREFIX + posId);
+    },
   };
 }
 
-IRR.store = { createStore, DEFAULT_THRESHOLDS, sanitizePosition, sanitizeApp, migrateLegacy, migrateV1, STORAGE_KEY };
+IRR.store = { createStore, DEFAULT_THRESHOLDS, sanitizePosition, sanitizeApp, migrateLegacy, migrateV1, encodeManual, decodeManual, STORAGE_KEY };
 
 if(typeof module !== "undefined" && module.exports) module.exports = IRR.store;
 

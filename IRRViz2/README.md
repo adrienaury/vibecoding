@@ -14,6 +14,24 @@ Le menu **Positions** (en haut à gauche) permet de suivre plusieurs actifs. Cha
 - La sauvegarde JSON contient toutes les positions et leurs cours en cache. Restaurer une sauvegarde complète remplace toutes les positions (annulable) ; une sauvegarde d'avant les positions est ajoutée comme nouvelle position.
 - Les données existantes (IRRViz 2 mono-position, ou IRRViz v1) sont reprises automatiquement dans une première position.
 
+## Historique de cours importé (CSV)
+
+Pour un actif absent de Yahoo Finance (fonds en unités de compte, SCPI, non coté…) ou sans lancer le proxy : **Cours de l'actif › Fichier CSV › Importer un historique…**
+
+- Deux colonnes `date;cours` (affichées en ligne, avec des points pour les cotations espacées) ou cinq `date;ouverture;haut;bas;clôture` (affichées en bougies).
+- Avec une ligne d'en-tête, les colonnes sont reconnues par leur nom : les exports **Yahoo Finance** (`Date,Open,High,Low,Close,Adj Close,Volume`) et **Investing.com** (`"Date","Price","Open",…`) s'importent tels quels. Les dates américaines `mm/jj/aaaa` sont détectées automatiquement ; les dates futures et les valeurs manquantes sont écartées.
+- Aperçu avant import, nom de l'actif modifiable, choix entre **remplacer** et **compléter** l'historique existant ; import et retrait annulables.
+- L'historique appartient à la position (une clé localStorage par position, distincte du cache Yahoo) : basculer entre « Yahoo Finance » et « Fichier CSV » ne perd ni l'un ni l'autre. Il est copié avec la position, inclus dans la sauvegarde JSON et exportable en CSV.
+- Dernier cours, plus-value latente et TRI actuel sont calculés avec le dernier cours importé (un avertissement signale un cours de plus de 45 jours).
+- Si un fichier de cours est ouvert par erreur dans l'import de transactions, IRRViz propose de l'importer comme cours.
+
+```csv
+Date;Valeur de part
+31/12/2025;250,00
+31/03/2026;251,20
+30/06/2026;253,10
+```
+
 ## Nouveautés par rapport à la v1
 
 ### Lecture du graphique
@@ -101,12 +119,12 @@ IRRViz2/
 │   ├── util.js    dates, formats, saisie numérique, palette
 │   ├── model.js   prix seuils, TRI, synthèse de position
 │   ├── store.js   positions, localStorage, annuler / rétablir, migrations
-│   ├── csv.js     import / export CSV
+│   ├── csv.js     import / export CSV (transactions, historiques de cours)
 │   ├── asset.js   cours Yahoo Finance via le proxy
 │   ├── chart.js   graphique SVG interactif
 │   └── app.js     interface
 ├── proxy.py
-└── tests/         model.test.js, store.test.js
+└── tests/         model.test.js, store.test.js, prices.test.js
 ```
 
 Les scripts sont des scripts classiques (pas de modules ES) pour que l'application fonctionne aussi ouverte directement depuis le disque (`file://`).

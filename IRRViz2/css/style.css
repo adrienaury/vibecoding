@@ -451,6 +451,18 @@ details.sub > summary:hover{ color: var(--text); }
 .proxy-dot{ width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); opacity: .5; }
 .proxy-dot.ok{ background: var(--pos); opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--pos) 20%, transparent); }
 .proxy-dot.ko{ background: var(--neg); opacity: 1; }
+.seg{ display: flex; gap: 2px; padding: 2px; margin-bottom: 10px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--border); }
+.seg-btn{
+  flex: 1; height: 28px; border: 0; border-radius: 7px; background: transparent;
+  font-size: 12px; font-weight: 500; color: var(--text-faint); transition: background .15s, color .15s;
+}
+.seg-btn:hover{ color: var(--text); }
+.seg-btn[aria-selected="true"]{ background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
+.src-panel[hidden], .import-options[hidden], [data-for][hidden], #proxyDetails[hidden]{ display: none; }
+.manual-actions{ display: flex; gap: 6px; align-items: center; }
+.card[data-source="manual"] .proxy-dot{ visibility: hidden; }
+.import-options .field{ margin-bottom: 4px; }
+.import-switch{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); font-size: 12.5px; }
 #tickerInput{ text-transform: uppercase; }
 #tickerInput::placeholder{ text-transform: none; }
 .asset-status{ margin-top: 10px; font-size: 12px; color: var(--text-dim); display: flex; flex-direction: column; gap: 4px; min-height: 18px; }
@@ -514,6 +526,7 @@ button.litem:hover{ background: var(--surface-3); color: var(--text); }
 .ldot.buy{ background: var(--buy); } .ldot.sell{ background: var(--sell); }
 .ltri{ width: 10px; height: 9px; background: var(--cash); clip-path: polygon(50% 0, 0 100%, 100% 100%); }
 .lhatch{ width: 12px; height: 10px; border-radius: 2px; background: repeating-linear-gradient(45deg, var(--text-faint) 0 1px, transparent 1px 4px); opacity: .7; }
+.lassetline{ width: 16px; height: 2px; border-radius: 2px; background: var(--text); opacity: .75; }
 .lcandle{ width: 5px; height: 11px; border-radius: 1px; background: #3fb968; box-shadow: 7px 2px 0 -0px #e0665f; margin-right: 7px; }
 
 .toggles{ display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
@@ -577,6 +590,8 @@ button.litem:hover{ background: var(--surface-3); color: var(--text); }
 .candle-up{ fill: #3fb968; stroke: #2a8a4d; }
 .candle-down{ fill: #e0665f; stroke: #a8413b; }
 .asset-close{ fill: none; stroke: var(--text); stroke-width: 1.4; stroke-opacity: .75; }
+.asset-close.strong{ stroke-width: 2; stroke-opacity: .9; }
+.asset-point{ fill: var(--text); stroke: var(--surface); stroke-width: 1.4; }
 .asset-range{ fill: var(--text); fill-opacity: .08; stroke: none; }
 .candle-dot{ fill: var(--text); stroke: var(--surface); stroke-width: 1.5; }
 

@@ -161,3 +161,44 @@ test("cache de cours propre à chaque position", () => {
   assert.ok(!ls.keys().includes(`irrviz2-prices-v2:${a}`));
   assert.equal(store.activeId, b);
 });
+
+test("historique importé : par position, copié à la duplication, sauvegardé, restauré après suppression", () => {
+  const ls = installStorage();
+  const store = St.createStore();
+  const a = store.activeId;
+  const candles = [
+    { ms: Date.UTC(2026, 0, 1), open: 1, high: 1, low: 1, close: 1 },
+    { ms: Date.UTC(2026, 0, 2), open: 1.1, high: 1.1, low: 1.1, close: 1.1 },
+  ];
+  assert.equal(store.writeManualPrices({ name: "SCPI X", kind: "close", candles }), true);
+  const rec = store.readManualPrices();
+  assert.equal(rec.name, "SCPI X");
+  assert.equal(rec.kind, "close");
+  assert.deepEqual(rec.candles, candles);
+  assert.deepEqual(ls.read(`irrviz2-manual-v2:${a}`).rows[0], [Date.UTC(2026, 0, 1) / 1000, 1]); // format compact
+
+  const b = store.duplicatePosition(a);
+  assert.equal(store.readManualPrices(b).name, "SCPI X");
+  store.update(s => { s.priceSource = "manual"; }, { undoable: false });
+  assert.equal(St.sanitizePosition(JSON.parse(JSON.stringify(store.state))).priceSource, "manual");
+
+  const backup = JSON.parse(JSON.stringify(store.backup()));
+  assert.ok(backup.manualPrices[a] && backup.manualPrices[b]);
+
+  const token = store.deletePosition(a);
+  assert.equal(store.readManualPrices(a), null);
+  store.restorePosition(token);
+  assert.equal(store.readManualPrices(a).candles.length, 2);
+
+  installStorage();
+  const other = St.createStore();
+  other.restoreBackup(backup);
+  assert.equal(other.readManualPrices(a).name, "SCPI X");
+});
+
+test("decodeManual ignore les lignes corrompues", () => {
+  assert.equal(St.decodeManual({ rows: [] }), null);
+  const rec = St.decodeManual({ kind: "ohlc", rows: [[86400, 1, 2, 0.5, 1.5], ["x", 1], [172800, 2, 3, 1, 2.5]] });
+  assert.equal(rec.candles.length, 2);
+  assert.equal(rec.name, "Cours importés");
+});
