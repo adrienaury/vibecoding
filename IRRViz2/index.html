@@ -6,6 +6,10 @@
 <title>IRRViz 2 — Prix seuils de rendement</title>
 <meta name="description" content="Visualisez le prix de revente nécessaire pour atteindre un rendement annuel net cible (TRI), à partir de vos transactions." />
 <meta name="color-scheme" content="dark light" />
+<!-- Politique de sécurité : scripts de l'application uniquement (et le script de thème ci-dessous, par son empreinte) ;
+     connexions limitées au proxy Yahoo local et à l'API GitHub (synchronisation). Modifier le script de thème
+     impose de recalculer son empreinte (test pwa.test.js). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OOFdLNJE0glN+nEZ2W31pnAItPSLEoH5UR27sR0r2UM='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.github.com http://127.0.0.1:*; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'" />
 <meta name="theme-color" content="#0b0e14" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0e14'/%3E%3Cpath d='M5 25 C11 23 15 17 27 7' stroke='%236fcf5a' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M5 25 C12 24 17 20 27 15' stroke='%23f0b429' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M5 25 C13 25 19 23 27 22' stroke='%23dd6a2e' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
 <link rel="manifest" href="manifest.webmanifest" />
@@ -56,6 +60,7 @@
     <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5L2.5 20h19z"/><path d="M12 10v4.5M12 17.3h.01"/></symbol>
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7.5 19h10a4.5 4.5 0 00.4-8.98A6 6 0 006.2 9.6 4.75 4.75 0 007.5 19z"/></symbol>
   </defs>
 </svg>
 
@@ -109,6 +114,7 @@
           <div class="menu-sep"></div>
           <button role="menuitem" data-action="backup"><svg class="ic"><use href="#i-download"/></svg>Sauvegarde complète, toutes positions (JSON)</button>
           <button role="menuitem" data-action="restore"><svg class="ic"><use href="#i-upload"/></svg>Restaurer une sauvegarde…</button>
+          <button role="menuitem" data-action="sync"><svg class="ic"><use href="#i-cloud"/></svg>Synchroniser entre appareils…</button>
           <div class="menu-sep"></div>
           <button role="menuitem" data-action="sample"><svg class="ic"><use href="#i-refresh"/></svg>Charger l'exemple</button>
           <button role="menuitem" data-action="clear" class="danger"><svg class="ic"><use href="#i-trash"/></svg>Effacer les transactions de la position</button>
@@ -116,6 +122,7 @@
       </div>
       <span class="offline-badge" id="offlineBadge" role="status" title="Pas de connexion : l'application fonctionne normalement, seuls les cours Yahoo ne peuvent pas être téléchargés." hidden><span class="dot"></span>Hors ligne</span>
       <button class="btn small install-btn" id="btnInstall" title="Installer IRRViz comme une application (fenêtre dédiée, utilisable hors ligne)" hidden><svg class="ic"><use href="#i-download"/></svg><span class="hide-xs">Installer</span></button>
+      <button class="icon-btn sync-btn" id="btnSync" data-state="off" title="Synchroniser entre appareils" aria-label="Synchronisation entre appareils"><svg class="ic"><use href="#i-cloud"/></svg><span class="sync-dot"></span></button>
       <button class="icon-btn" id="btnTheme" title="Thème" aria-label="Changer de thème"><svg class="ic"><use href="#i-auto"/></svg></button>
       <button class="icon-btn" id="btnHelp" title="Aide et raccourcis (?)" aria-label="Aide"><svg class="ic"><use href="#i-help"/></svg></button>
     </div>
@@ -228,7 +235,7 @@
       </details>
 
       <footer class="panel-foot">
-        <span>Données stockées uniquement dans ce navigateur.</span>
+        <span id="storageNote">Données stockées uniquement dans ce navigateur.</span>
         <a href="../IRRViz/">Version 1</a>
       </footer>
     </aside>
@@ -343,7 +350,7 @@
       <div class="install-note" data-platform="ios">
         <svg class="ic"><use href="#i-warn"/></svg>
         <div>
-          <p><b>Vos données ne suivent pas automatiquement.</b> Sur iPhone et iPad, l'application installée a son propre stockage, séparé de celui du navigateur. Exportez une sauvegarde maintenant, puis ouvrez-la depuis l'application installée : <i>Données › Restaurer une sauvegarde</i>.</p>
+          <p><b>Vos données ne suivent pas automatiquement.</b> Sur iPhone et iPad, l'application installée a son propre stockage, séparé de celui du navigateur. Exportez une sauvegarde maintenant, puis ouvrez-la depuis l'application installée : <i>Données › Restaurer une sauvegarde</i>. Ou activez la <b>synchronisation GitHub</b> dans l'application installée (<i>Données › Synchroniser entre appareils</i>).</p>
           <button class="btn small" type="button" data-act="backup"><svg class="ic"><use href="#i-download"/></svg>Exporter une sauvegarde</button>
         </div>
       </div>
@@ -370,6 +377,14 @@
         <li>Les zones hachurées correspondent aux périodes où la position est soldée.</li>
         <li>Pas de symbole Yahoo pour votre actif (fonds, SCPI, non coté) ? Dans <b>Cours de l'actif › Fichier CSV</b>, importez son historique de cours : aucun proxy n'est nécessaire.</li>
         <li>Suivez plusieurs actifs avec le menu <b>Positions</b> (en haut à gauche) : chacune a ses propres transactions, seuils, frais, horizon et cours.</li>
+      </ul>
+      <h3>Synchroniser entre appareils</h3>
+      <p>Pour retrouver vos positions sur plusieurs appareils (ordinateur, iPad…), IRRViz peut en garder une copie dans un <b>dépôt GitHub privé</b> : bouton <svg class="ic ic-inline"><use href="#i-cloud"/></svg> en haut de la page, ou <i>Données › Synchroniser entre appareils</i>.</p>
+      <ul>
+        <li>Une fois par appareil : collez un <b>jeton personnel à portée fine</b>, limité à ce dépôt (permission <i>Contents</i> en lecture et écriture). La fenêtre de synchronisation détaille la création du dépôt et du jeton.</li>
+        <li>Synchronisation automatique : à l'ouverture, au retour de la connexion ou de l'application au premier plan, et quelques instants après vos modifications, regroupées en un seul envoi. Chaque envoi est un commit : l'historique complet reste consultable sur GitHub.</li>
+        <li>Chaque position est fusionnée séparément ; une position supprimée ne réapparaît pas. Modifiée sur deux appareils à la fois, la version la plus récente est gardée et l'autre vous est proposée.</li>
+        <li>Les cours Yahoo en cache, la vue du graphique, le thème et le port du proxy restent propres à chaque appareil ; les historiques de cours importés sont synchronisés.</li>
       </ul>
       <h3>Installer l'application</h3>
       <p>Une fois installé, IRRViz s'ouvre dans sa propre fenêtre et <b>fonctionne hors ligne</b> : seul le téléchargement des cours Yahoo demande une connexion. Vos données restent stockées dans ce navigateur.</p>
@@ -427,12 +442,98 @@
   </form>
 </dialog>
 
+<!-- Synchronisation entre appareils (dépôt GitHub privé) -->
+<dialog id="syncDialog" class="dialog wide" aria-labelledby="syncTitle">
+  <form method="dialog" class="dialog-inner" id="syncForm" autocomplete="off" novalidate>
+    <header class="dialog-head">
+      <h2 id="syncTitle">Synchroniser entre appareils</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Fermer"><svg class="ic"><use href="#i-x"/></svg></button>
+    </header>
+
+    <div class="dialog-body sync-body" data-view="setup">
+      <p class="sync-intro">Retrouvez vos positions sur tous vos appareils grâce à un <b>dépôt GitHub privé</b> qui en garde une copie. Chaque synchronisation y est enregistrée : l'historique complet reste consultable.</p>
+      <details class="sub sync-howto" id="syncHowto">
+        <summary>Créer le dépôt et le jeton (une seule fois)</summary>
+        <ol class="howto">
+          <li>Sur GitHub, créez un dépôt <b>privé</b>, par exemple <code>irrviz-data</code> : <a href="https://github.com/new" target="_blank" rel="noopener noreferrer">nouveau dépôt</a>, visibilité <i>Private</i>.</li>
+          <li>Créez un <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">jeton à portée fine</a> <span class="muted">(Settings › Developer settings › Personal access tokens › Fine-grained tokens)</span> et choisissez sa date d'expiration.</li>
+          <li><i>Repository access</i> : <b>Only select repositories</b>, puis votre dépôt. <i>Permissions › Contents</i> : <b>Read and write</b>. Rien d'autre.</li>
+          <li>Copiez le jeton (<code>github_pat_…</code>) et collez-le ci-dessous, sur chaque appareil. Sur iPhone / iPad, faites-le <b>dans l'application installée</b> si vous l'utilisez : elle a son propre stockage.</li>
+        </ol>
+      </details>
+      <label class="field">
+        <span class="field-label">Dépôt</span>
+        <input type="text" id="syncRepo" placeholder="propriétaire/irrviz-data" spellcheck="false" autocapitalize="off" />
+      </label>
+      <label class="field">
+        <span class="field-label">Jeton personnel</span>
+        <input type="password" id="syncToken" placeholder="github_pat_…" spellcheck="false" autocapitalize="off" autocomplete="off" />
+      </label>
+      <div class="field-pair">
+        <label class="field">
+          <span class="field-label">Expiration du jeton <span class="opt">pour être prévenu</span></span>
+          <input type="date" id="syncExpiry" />
+        </label>
+        <label class="field">
+          <span class="field-label">Nom de cet appareil</span>
+          <input type="text" id="syncDevice" maxlength="40" spellcheck="false" />
+        </label>
+      </div>
+      <details class="sub">
+        <summary>Options avancées</summary>
+        <div class="field-pair">
+          <label class="field">
+            <span class="field-label">Fichier dans le dépôt</span>
+            <input type="text" id="syncPath" placeholder="irrviz.json" spellcheck="false" autocapitalize="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Branche</span>
+            <input type="text" id="syncBranch" placeholder="branche par défaut" spellcheck="false" autocapitalize="off" />
+          </label>
+        </div>
+      </details>
+      <div class="sync-result" id="syncResult" aria-live="polite"></div>
+      <p class="hint">Le jeton reste dans ce navigateur : il n'est envoyé qu'à <code>api.github.com</code> et ne figure pas dans les sauvegardes JSON. Le cache des cours Yahoo, la vue du graphique et les préférences d'affichage ne sont pas synchronisés.</p>
+    </div>
+
+    <div class="dialog-body sync-body" data-view="status" hidden>
+      <div class="sync-state" id="syncState"></div>
+      <div id="syncNotes"></div>
+      <div id="syncConflicts"></div>
+      <details class="sub" id="syncTokenBox">
+        <summary>Remplacer le jeton</summary>
+        <div class="field-pair">
+          <label class="field">
+            <span class="field-label">Nouveau jeton</span>
+            <input type="password" id="syncNewToken" placeholder="github_pat_…" spellcheck="false" autocapitalize="off" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Expiration <span class="opt">optionnel</span></span>
+            <input type="date" id="syncNewExpiry" />
+          </label>
+        </div>
+        <button class="btn small" type="button" id="btnSyncToken">Enregistrer et synchroniser</button>
+      </details>
+    </div>
+
+    <footer class="dialog-foot">
+      <button class="btn ghost danger-text" type="button" id="btnSyncDisconnect" hidden>Déconnecter cet appareil</button>
+      <span class="foot-spacer"></span>
+      <button class="btn ghost" type="button" data-close>Fermer</button>
+      <button class="btn" type="button" id="btnSyncTest">Tester</button>
+      <button class="btn primary" type="button" id="btnSyncMain">Connecter</button>
+    </footer>
+  </form>
+</dialog>
+
 <input type="file" id="restoreFile" accept=".json,application/json" hidden />
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
 <script src="js/util.js"></script>
 <script src="js/model.js"></script>
 <script src="js/store.js"></script>
+<script src="js/github.js"></script>
+<script src="js/sync.js"></script>
 <script src="js/asset.js"></script>
 <script src="js/chart.js"></script>
 <script src="js/csv.js"></script>

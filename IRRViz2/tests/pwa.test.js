@@ -48,3 +48,17 @@ test("le manifeste est valide et ses icônes existent", () => {
     assert.ok(shell.includes(icon.src), `${icon.src} absent de APP_SHELL`);
   }
 });
+
+test("politique de sécurité : empreinte du script en ligne à jour, connexions limitées", () => {
+  const html = read("index.html");
+  const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html);
+  assert.ok(csp, "CSP absente de index.html");
+  const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  const crypto = require("node:crypto");
+  for(const code of inline){
+    const hash = crypto.createHash("sha256").update(code).digest("base64");
+    assert.ok(csp[1].includes(`'sha256-${hash}'`), "empreinte du script en ligne à recalculer dans la CSP");
+  }
+  const connect = /connect-src ([^;]+)/.exec(csp[1])[1].trim().split(/\s+/);
+  assert.deepEqual(connect, ["'self'", "https://api.github.com", "http://127.0.0.1:*"]);
+});

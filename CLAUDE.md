@@ -13,18 +13,21 @@ Tout en **français** : textes de l'interface, commentaires, README, messages de
 - Toute nouvelle dépendance externe (script tiers, service distant) doit être discutée avec l'utilisateur avant d'être ajoutée.
 
 ## IRRViz 2 : organisation
-- `index.html` : charge, dans l'ordre, `js/util.js`, `model.js`, `store.js`, `asset.js`, `chart.js`, `csv.js`, `app.js`.
+- `index.html` : charge, dans l'ordre, `js/util.js`, `model.js`, `store.js`, `github.js`, `sync.js`, `asset.js`, `chart.js`, `csv.js`, `app.js`.
 - `js/util.js` : dates (timestamps UTC à minuit, en ms), formats `fr-FR` / EUR, saisie numérique tolérante, palette des seuils.
 - `js/model.js` : prix seuils et TRI (XIRR). Calcul pur, sans DOM.
-- `js/store.js` : état, positions multiples, persistance, annuler / rétablir, migrations. **Toute la persistance passe par là.**
+- `js/store.js` : état, positions multiples, persistance, annuler / rétablir, migrations, moteur de fusion de la synchronisation (`syncEngine`). **Toute la persistance passe par là.**
+- `js/sync.js` : orchestration de la synchronisation entre appareils (quand synchroniser, conflits, état affiché), indépendante du service. `js/github.js` : adaptateur GitHub (API Contents, écriture conditionnelle par `sha`). Voir l'issue #17.
 - `js/csv.js` : import / export CSV des transactions et des historiques de cours.
 - `js/asset.js` : cours Yahoo Finance via `proxy.py` (proxy CORS local, Python standard).
 - `js/chart.js` : graphique SVG interactif. `js/app.js` : câblage de l'interface.
 - `sw.js` + `manifest.webmanifest` + `icons/` : application installable et hors ligne (PWA).
 
 ## Règles à respecter
-- **Données utilisateur** : clés `irrviz2-app-v2` (état), `irrviz2-prices-v2:<id>` (cache Yahoo) et `irrviz2-manual-v2:<id>` (cours importés). Ne jamais casser la lecture d'un état existant : tout ce qui est lu passe par `sanitize…` ; toute évolution de format s'accompagne d'une migration (des migrations existent depuis `irrviz2-state-v1` et depuis la v1 `mwviz-state-v1`).
+- **Données utilisateur** : clés `irrviz2-app-v2` (état), `irrviz2-prices-v2:<id>` (cache Yahoo), `irrviz2-manual-v2:<id>` (cours importés) et `irrviz2-sync-v2` (réglages de synchronisation, jeton compris : jamais exporté ni synchronisé). Ne jamais casser la lecture d'un état existant : tout ce qui est lu passe par `sanitize…` ; toute évolution de format s'accompagne d'une migration (des migrations existent depuis `irrviz2-state-v1` et depuis la v1 `mwviz-state-v1`).
 - **Modifications d'état** : `store.update(mutator, { key, kind })` pour les données (annulable) ; `store.setUi(...)` pour les préférences d'affichage (non annulable). Données propres à chaque position, préférences communes.
+- **Synchronisation** : toute modification de données synchronisées doit dater la position (`touch`, dans `store.js`) ; une suppression laisse une trace (`deleted`). Un nouveau champ de position à synchroniser s'ajoute aussi à `positionHash`.
+- **Sécurité (CSP)** : `index.html` porte une politique de sécurité de contenu. Modifier le script en ligne du thème impose de recalculer son empreinte ; un nouveau domaine appelé par l'application s'ajoute à `connect-src` (à discuter, comme toute dépendance externe). `pwa.test.js` le vérifie.
 - **Hors ligne** : quand un fichier de l'application est ajouté, renommé ou supprimé, mettre à jour `APP_SHELL` dans `IRRViz2/sw.js` et incrémenter `VERSION`. Le test `pwa.test.js` échoue si un fichier chargé par `index.html` manque à la liste.
 - **iPhone / iPad** : l'application installée a son propre stockage, séparé de Safari. Les connexions OAuth par redirection depuis l'application installée basculent dans Safari : éviter cette approche (voir l'issue #17).
 - Les textes de l'interface restent courts et en français ; l'aide intégrée (`?`) et `IRRViz2/README.md` sont mis à jour avec chaque fonctionnalité.

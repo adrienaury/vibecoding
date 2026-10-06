@@ -605,6 +605,19 @@ function syncAsset(){
   renderAssetStatus();
 }
 
+// Position active modifiée sur un autre appareil : on ne recharge les cours que s'ils ont changé.
+function assetAfterSync(){
+  if(S().priceSource === "manual"){
+    assetRequest++;
+    const rec = store.readManualPrices();
+    assetData = rec ? manualAssetData(rec) : null;
+    assetState = { status: "idle" };
+    renderAssetStatus();
+  } else if(!assetData || assetData.source !== "yahoo" || assetData.ticker !== S().assetTicker){
+    syncAsset();
+  }
+}
+
 function manualAssetData(rec){
   return { source: "manual", kind: rec.kind, ticker: rec.name, candles: rec.candles, currency: null, fileName: rec.fileName, importedAt: rec.importedAt };
 }
@@ -1117,6 +1130,7 @@ function runAction(action){
       download(`irrviz-sauvegarde-${stamp()}.json`, JSON.stringify(store.backup(), null, 2), "application/json");
       break;
     case "restore": el.restoreFile.click(); break;
+    case "sync": openSync(); break;
     case "sample":
       store.loadSample();
       chart.resetView("both");
@@ -1394,6 +1408,7 @@ function initPwa(){
       toast("Hors ligne : l'application reste utilisable et vos modifications sont enregistrées.", { timeout: 4000 });
     } else {
       toast("Connexion rétablie", { type: "success", timeout: 2000 });
+      sync.onOnline();
       // Rafraîchit des cours Yahoo affichés depuis le cache pendant la coupure.
       if(S().priceSource === "yahoo" && S().assetTicker && (!assetData || assetData.cached)) loadAsset(S().assetTicker, { silent: true });
     }
@@ -1401,6 +1416,316 @@ function initPwa(){
   window.addEventListener("online", () => onConnectivity(true));
   window.addEventListener("offline", () => onConnectivity(true));
   onConnectivity(false);
+}
+
+/* =====================================================================
+   Synchronisation entre appareils (dépôt GitHub privé + jeton personnel)
+   ===================================================================== */
+
+const sync = IRR.sync.createSync({
+  store,
+  createAdapter: cfg => IRR.github.createGitHubAdapter(cfg),
+  isOnline: () => navigator.onLine !== false,
+});
+
+const sy = {
+  dialog: $("syncDialog"), setup: document.querySelector('.sync-body[data-view="setup"]'), status: document.querySelector('.sync-body[data-view="status"]'),
+  repo: $("syncRepo"), token: $("syncToken"), expiry: $("syncExpiry"), device: $("syncDevice"), path: $("syncPath"), branch: $("syncBranch"),
+  howto: $("syncHowto"), result: $("syncResult"),
+  state: $("syncState"), notes: $("syncNotes"), conflicts: $("syncConflicts"),
+  tokenBox: $("syncTokenBox"), newToken: $("syncNewToken"), newExpiry: $("syncNewExpiry"), btnToken: $("btnSyncToken"),
+  btnTest: $("btnSyncTest"), btnMain: $("btnSyncMain"), btnDisconnect: $("btnSyncDisconnect"),
+  btn: $("btnSync"), note: $("storageNote"),
+};
+
+let syncTested = null;     // dernier test réussi : { key, config, res }
+let syncBusy = false;
+let syncPrev = { state: null, conflicts: 0 };
+
+// Nom proposé pour cet appareil (repris dans les messages de commit).
+function defaultDeviceName(){
+  const ua = navigator.userAgent;
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const ipad = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const name = ipad ? "iPad" : /iPhone|iPod/.test(ua) ? "iPhone" : /Android/.test(ua) ? "Android"
+    : /Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "PC Windows" : /Linux/.test(ua) ? "Linux" : "Navigateur";
+  // Sur iPhone / iPad, l'application installée et le navigateur ont des stockages distincts.
+  return (name === "iPad" || name === "iPhone") ? `${name} (${standalone ? "application" : "navigateur"})` : name;
+}
+
+function timeAgo(ms){
+  const s = (Date.now() - ms) / 1000;
+  if(s < 45) return "à l'instant";
+  if(s < 3600) return `il y a ${Math.round(s / 60)} min`;
+  if(s < 86400) return `il y a ${Math.round(s / 3600)} h`;
+  return `le ${new Date(ms).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}`;
+}
+
+const icon = (name, cls = "") => `<svg class="ic${cls ? " " + cls : ""}"><use href="#i-${name}"/></svg>`;
+const syncLine = (kind, html) => `<div class="sync-line ${kind}">${icon(kind === "ok" ? "check" : kind === "busy" ? "refresh" : "warn", kind === "busy" ? "spin" : "")}<span>${html}</span></div>`;
+
+function renderSyncButton(st){
+  sy.btn.dataset.state = st.state;
+  sy.btn.classList.toggle("warn", !!st.warning);
+  const when = st.lastSyncAt && (st.state === "synced" || st.state === "pending") ? ` · dernière synchronisation ${timeAgo(st.lastSyncAt)}` : "";
+  const label = st.state === "off" ? "Synchroniser entre appareils (GitHub)" : `${st.message}${when}${st.warning ? ` — ${st.warning}` : ""}`;
+  sy.btn.title = label;
+  sy.btn.setAttribute("aria-label", label);
+  sy.note.textContent = st.config && st.repo
+    ? `Données stockées dans ce navigateur, synchronisées avec GitHub (${st.repo.label}).`
+    : "Données stockées uniquement dans ce navigateur.";
+}
+
+/* ---------------- Mise en place ---------------- */
+
+function readSyncForm({ quiet = false } = {}){
+  const repo = IRR.github.parseRepo(sy.repo.value);
+  const path = IRR.github.normalizePath(sy.path.value);
+  const token = sy.token.value.trim();
+  sy.repo.classList.toggle("invalid", !quiet && !repo);
+  sy.token.classList.toggle("invalid", !quiet && !token);
+  sy.path.classList.toggle("invalid", !quiet && !path);
+  if(!repo || !token || !path) return null;
+  return {
+    owner: repo.owner, repo: repo.repo, token, path,
+    branch: sy.branch.value.trim(),
+    device: sy.device.value.trim() || defaultDeviceName(),
+    expiresAt: sy.expiry.value || "",
+  };
+}
+const formKey = cfg => cfg && JSON.stringify([cfg.owner, cfg.repo, cfg.token, cfg.path, cfg.branch]);
+
+function renderTestResult(){
+  if(!syncTested){ sy.result.innerHTML = ""; return; }
+  const { res, config } = syncTested;
+  const n = store.positions.length;
+  let html = syncLine("ok", `Dépôt privé <b>${U.escapeHtml(res.repo.fullName)}</b> accessible.`);
+  if(res.remote){
+    const r = res.remote;
+    const names = r.names.slice(0, 4).map(U.escapeHtml).join(", ") + (r.names.length > 4 ? "…" : "");
+    const when = r.exportedAt && !isNaN(Date.parse(r.exportedAt)) ? `, enregistré ${timeAgo(Date.parse(r.exportedAt))}` : "";
+    html += syncLine("ok", `Fichier <code>${U.escapeHtml(config.path)}</code> : ${r.positions} position${r.positions > 1 ? "s" : ""}${names ? ` (${names})` : ""}${when}${r.device ? ` depuis ${U.escapeHtml(r.device)}` : ""}.`);
+    const pristine = store.isPristine();
+    html += `<div class="sync-choice" role="radiogroup" aria-label="Données de cet appareil">
+      <label class="radio"><input type="radio" name="syncMode" value="merge"${pristine ? "" : " checked"} /><span><b>Fusionner</b> avec ${n > 1 ? `les ${n} positions` : "la position"} de cet appareil</span></label>
+      <label class="radio"><input type="radio" name="syncMode" value="replace"${pristine ? " checked" : ""} /><span><b>Remplacer</b> les données de cet appareil par celles du dépôt</span></label>
+      <p class="hint" id="syncReplaceHint"${pristine ? "" : " hidden"}>${pristine ? "Cet appareil ne contient que l'exemple de départ : rien ne sera perdu." : `Les positions de cet appareil seront remplacées. <button type="button" class="link-btn" data-act="backup">Exporter une sauvegarde</button> d'abord si besoin.`}</p>
+    </div>`;
+  } else {
+    html += syncLine("ok", `Le fichier <code>${U.escapeHtml(config.path)}</code> sera créé avec ${n > 1 ? `vos ${n} positions` : "votre position"}.`);
+  }
+  sy.result.innerHTML = html;
+}
+
+async function testSync(){
+  const config = readSyncForm();
+  if(!config){ sy.result.innerHTML = syncLine("err", "Renseignez le dépôt (<code>propriétaire/nom</code>) et le jeton."); return null; }
+  syncBusy = true; renderSyncFooter();
+  sy.result.innerHTML = syncLine("busy", "Vérification auprès de GitHub…");
+  try{
+    const res = await sync.test(config);
+    syncTested = { key: formKey(config), config, res };
+    renderTestResult();
+    return syncTested;
+  }catch(e){
+    syncTested = null;
+    sy.result.innerHTML = syncLine("err", U.escapeHtml(e.message));
+    return null;
+  }finally{
+    syncBusy = false; renderSyncFooter();
+  }
+}
+
+async function connectSync(){
+  const config = readSyncForm();
+  if(!config) return testSync();
+  const tested = syncTested && syncTested.key === formKey(config) ? syncTested : await testSync();
+  if(!tested) return;
+  const choice = sy.result.querySelector('input[name="syncMode"]:checked');
+  const mode = choice ? choice.value : "merge";
+  syncBusy = true; renderSyncFooter();
+  sy.result.insertAdjacentHTML("beforeend", syncLine("busy", "Première synchronisation…"));
+  try{
+    await sync.connect(Object.assign({}, config, { defaultBranch: tested.res.repo.defaultBranch }), { mode, remote: tested.res.remote });
+    toast(mode === "replace" ? "Synchronisation activée : données reprises du dépôt." : "Synchronisation activée.", { type: "success", timeout: 4000 });
+  }catch(e){
+    if(!sync.configured) sy.result.innerHTML = syncLine("err", U.escapeHtml(e.message));
+  }finally{
+    syncBusy = false;
+    syncTested = null;
+    sy.token.value = "";
+    renderSyncDialog();
+  }
+}
+
+/* ---------------- État et conflits ---------------- */
+
+function conflictHtml(c, i){
+  const name = `« ${U.escapeHtml(c.name)} »`;
+  const here = c.kept === "local";
+  let text, actions;
+  if(c.other && !c.keptDeleted){
+    text = `${name} a été modifiée sur cet appareil et sur un autre. La version la plus récente, ${here ? "celle de cet appareil" : "celle de l'autre appareil"}, a été gardée.`;
+    actions = [["other", "Reprendre l'autre version"], ["both", "Garder les deux"], ["dismiss", "Garder celle-ci"]];
+  } else if(c.other){
+    text = here
+      ? `${name}, supprimée sur cet appareil, avait été modifiée sur un autre appareil.`
+      : `${name}, modifiée sur cet appareil, a été supprimée sur un autre appareil.`;
+    actions = [["other", "La restaurer"], ["dismiss", "Confirmer la suppression"]];
+  } else {
+    text = here
+      ? `${name}, supprimée sur un autre appareil, a été conservée : vous l'avez modifiée ici ensuite.`
+      : `${name}, supprimée sur cet appareil, a été conservée : elle a été modifiée ensuite sur un autre appareil.`;
+    actions = [["other", "La supprimer"], ["dismiss", "La garder"]];
+  }
+  return `<div class="sync-conflict" data-i="${i}">
+    ${icon("warn")}<div><p>${text}</p><div class="sync-actions">${actions.map(([act, label], k) =>
+      `<button type="button" class="btn tiny${k === 0 ? " primary" : ""}" data-conflict="${act}">${label}</button>`).join("")}</div></div>
+  </div>`;
+}
+
+function renderSyncStatus(st){
+  const when = st.lastSyncAt ? `Dernière synchronisation ${timeAgo(st.lastSyncAt)}` : "Jamais synchronisé";
+  sy.state.dataset.state = st.state;
+  sy.state.innerHTML = `<span class="sync-dot"></span><div><b>${U.escapeHtml(st.message)}</b><small>${when}</small></div>`;
+  const c = st.config, r = st.repo;
+  let notes = `<p class="sync-repo">Dépôt <a href="${U.escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${U.escapeHtml(r.label)}</a>
+    · fichier <a href="${U.escapeHtml(r.fileUrl)}" target="_blank" rel="noopener noreferrer"><code>${U.escapeHtml(c.path)}</code></a>
+    · <a href="${U.escapeHtml(r.historyUrl)}" target="_blank" rel="noopener noreferrer">historique des versions</a></p>
+    <p class="sync-repo">Cet appareil : <b>${U.escapeHtml(c.device || defaultDeviceName())}</b>${c.expiresAt ? ` · jeton valable jusqu'au ${U.fmtDate(U.isoToMs(c.expiresAt))}` : ""}</p>`;
+  if(st.warning) notes += syncLine("warn", `${U.escapeHtml(st.warning)} Créez-en un nouveau sur GitHub, puis « Remplacer le jeton » ci-dessous.`);
+  if(st.state === "auth") notes += syncLine("err", "GitHub refuse le jeton (expiré, révoqué ou sans accès au dépôt). Créez-en un nouveau, puis « Remplacer le jeton » ci-dessous.");
+  else if(st.error && st.state !== "conflict") notes += syncLine(st.error.code === "network" ? "warn" : "err", U.escapeHtml(st.error.message));
+  sy.notes.innerHTML = notes;
+  sy.conflicts.innerHTML = st.conflicts.length
+    ? `<h3 class="sync-h">Versions à vérifier</h3>${st.conflicts.map(conflictHtml).join("")}`
+    : "";
+  if(st.state === "auth" || st.warning) sy.tokenBox.open = true;
+}
+
+function renderSyncFooter(){
+  const configured = sync.configured;
+  sy.btnTest.hidden = configured;
+  sy.btnDisconnect.hidden = !configured;
+  sy.btnMain.textContent = configured ? "Synchroniser maintenant" : "Connecter";
+  sy.btnMain.disabled = syncBusy || (configured && sync.status.state === "syncing");
+  sy.btnTest.disabled = syncBusy;
+}
+
+function renderSyncDialog(st = sync.status){
+  const configured = st.state !== "off";
+  sy.setup.hidden = configured;
+  sy.status.hidden = !configured;
+  if(configured) renderSyncStatus(st);
+  renderSyncFooter();
+}
+
+function openSync(){
+  if(!sync.configured){
+    sy.device.value = sy.device.value || defaultDeviceName();
+    if(!sy.repo.value) sy.howto.open = true;
+    renderTestResult();
+  }
+  sy.newToken.value = "";
+  renderSyncDialog();
+  if(!sy.dialog.open) sy.dialog.showModal();
+  if(!sync.configured) (sy.repo.value ? sy.token : sy.repo).focus();
+}
+
+async function syncNowFromUi(){
+  try{
+    const res = await sync.syncNow({ manual: true });
+    if(!res) return;
+    const n = res.pulled.length;
+    toast(n ? `Synchronisé : ${n} position${n > 1 ? "s" : ""} mise${n > 1 ? "s" : ""} à jour depuis le dépôt.` : res.pushed ? "Synchronisé : modifications envoyées." : "Synchronisé : déjà à jour.", { type: "success", timeout: 3000 });
+  }catch(e){
+    if(!sy.dialog.open) toast(e.message, { type: "error", timeout: 7000 });
+  }
+}
+
+// Notifications sur les changements d'état survenus en arrière-plan.
+function notifySync(st){
+  const prev = syncPrev;
+  syncPrev = { state: st.state, conflicts: st.conflicts.length };
+  if(prev.state === null || sy.dialog.open) return;
+  const open = { label: "Voir", fn: openSync };
+  if(st.conflicts.length > prev.conflicts){
+    const c = st.conflicts[st.conflicts.length - 1];
+    toast(`Synchronisation : « ${c.name} » modifiée sur deux appareils. La version la plus récente a été gardée.`, { timeout: 12000, action: open });
+  } else if(st.state === "auth" && prev.state !== "auth"){
+    toast("Synchronisation interrompue : jeton GitHub refusé ou expiré.", { type: "error", timeout: 12000, action: { label: "Corriger", fn: openSync } });
+  } else if(st.state === "error" && prev.state !== "error"){
+    toast(`Synchronisation : ${st.message}`, { type: "error", timeout: 9000, action: open });
+  }
+}
+
+function initSync(){
+  sync.subscribe(st => {
+    renderSyncButton(st);
+    if(sy.dialog.open) renderSyncDialog(st);
+    notifySync(st);
+  });
+  sync.onResult((res, { manual }) => {
+    if(!manual && res.pulled.length && !res.conflicts.length) toast("Données mises à jour depuis un autre appareil.", { timeout: 2500 });
+  });
+
+  sy.btn.addEventListener("click", openSync);
+  sy.btn.addEventListener("mouseenter", () => renderSyncButton(sync.status));
+  sy.dialog.addEventListener("click", e => {
+    if(e.target === sy.dialog || e.target.closest("[data-close]")) return sy.dialog.close();
+    if(e.target.closest('[data-act="backup"]')) return runAction("backup");
+    const b = e.target.closest("[data-conflict]");
+    if(b) sync.resolveConflict(Number(b.closest("[data-i]").dataset.i), b.dataset.conflict);
+  });
+  sy.result.addEventListener("change", e => {
+    if(e.target.name !== "syncMode") return;
+    const hint = $("syncReplaceHint");
+    if(hint) hint.hidden = e.target.value !== "replace" && !store.isPristine();
+  });
+  // Un réglage modifié après le test impose un nouveau test.
+  [sy.repo, sy.token, sy.path, sy.branch].forEach(i => i.addEventListener("input", () => {
+    i.classList.remove("invalid");
+    if(syncTested && syncTested.key !== formKey(readSyncForm({ quiet: true }))){ syncTested = null; renderTestResult(); }
+  }));
+  sy.btnTest.addEventListener("click", testSync);
+  sy.btnMain.addEventListener("click", () => (sync.configured ? syncNowFromUi() : connectSync()));
+  sy.dialog.addEventListener("keydown", e => {
+    if(e.key === "Enter" && e.target.tagName === "INPUT" && e.target.type !== "radio"){
+      e.preventDefault();
+      if(e.target === sy.newToken || e.target === sy.newExpiry) sy.btnToken.click();
+      else if(!sync.configured) connectSync();
+    }
+  });
+  sy.btnToken.addEventListener("click", async () => {
+    const token = sy.newToken.value.trim();
+    if(!token){ sy.newToken.classList.add("invalid"); sy.newToken.focus(); return; }
+    sy.newToken.classList.remove("invalid");
+    sy.newToken.value = "";
+    sy.tokenBox.open = false;
+    try{
+      await sync.updateToken(token, sy.newExpiry.value || "");
+      toast("Nouveau jeton enregistré.", { type: "success", timeout: 3000 });
+    }catch(e){ /* l'erreur est affichée dans la fenêtre */ }
+  });
+  let confirmTimer = null;
+  sy.btnDisconnect.addEventListener("click", () => {
+    if(!confirmTimer){
+      sy.btnDisconnect.textContent = "Confirmer la déconnexion";
+      confirmTimer = setTimeout(() => { confirmTimer = null; sy.btnDisconnect.textContent = "Déconnecter cet appareil"; }, 4000);
+      return;
+    }
+    clearTimeout(confirmTimer);
+    confirmTimer = null;
+    sy.btnDisconnect.textContent = "Déconnecter cet appareil";
+    sync.disconnect();
+    toast("Synchronisation désactivée sur cet appareil. Vos données restent ici et dans le dépôt.", { timeout: 6000 });
+  });
+  // Rafraîchit « il y a N min ».
+  setInterval(() => { const st = sync.status; renderSyncButton(st); if(sy.dialog.open && st.state !== "off") renderSyncStatus(st); }, 30000);
+
+  sync.start();
+  const st = sync.status;
+  if(st.warning) toast(st.warning, { timeout: 8000, action: { label: "Remplacer", fn: openSync } });
 }
 
 /* =====================================================================
@@ -1426,6 +1751,7 @@ store.subscribe(kind => {
   if(kind === "none"){ updateUndoButtons(); return; }
   if(kind === "positions"){ renderPositions(); return; }
   if(kind === "switch") onSwitch();
+  if(kind === "sync") assetAfterSync();
   if(kind === "ui"){
     renderToggles(); applyPanelState(); renderChips(); renderLegend(); pushChart();
     return;
@@ -1513,11 +1839,15 @@ function init(){
   initSettings();
   initImportExport();
   initShortcuts();
+  initSync();
 
   mqLight.addEventListener("change", () => { if(G().ui.theme === "auto"){ applyTheme(); renderChips(); renderLegend(); pushChart(); } });
   mqMobile.addEventListener("change", () => { setDrawer(false); applyPanelState(); });
-  window.addEventListener("pagehide", () => store.flush());
-  document.addEventListener("visibilitychange", () => { if(document.hidden) store.flush(); });
+  window.addEventListener("pagehide", () => { store.flush(); sync.onBackground(); });
+  document.addEventListener("visibilitychange", () => {
+    if(document.hidden){ store.flush(); sync.onBackground(); }
+    else sync.onForeground();
+  });
 
   renderTxList(); renderChips(); renderSettings(); renderToggles(); applyPanelState();
   initAsset();

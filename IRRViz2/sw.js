@@ -13,7 +13,7 @@
    APP_SHELL change (fichier ajouté, renommé ou supprimé).
    ========================================================================= */
 
-const VERSION = "1";
+const VERSION = "2";
 const CACHE = `irrviz2-shell-v${VERSION}`;
 const NETWORK_TIMEOUT_MS = 4000;
 
@@ -24,6 +24,8 @@ const APP_SHELL = [
   "js/util.js",
   "js/model.js",
   "js/store.js",
+  "js/github.js",
+  "js/sync.js",
   "js/asset.js",
   "js/chart.js",
   "js/csv.js",
