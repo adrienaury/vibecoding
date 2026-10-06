@@ -5,6 +5,12 @@
    transactions, seuils, frais, horizon, symbole, vue du graphique, historique
    d'annulation et cache de cours. Les préférences d'affichage (thème, panneau…)
    et le port du proxy sont communs à toutes les positions.
+
+   Synchronisation entre appareils : chaque position porte une date de
+   modification (`modifiedAt`), une position supprimée laisse une trace
+   (`deleted`, id → date) et l'ordre des positions a sa propre date (`orderAt`).
+   Le moteur de fusion (plus bas, `syncEngine`) compare deux copies position par
+   position ; le transport (GitHub…) est dans sync.js et github.js.
    ========================================================================= */
 
 (function(root){
@@ -19,7 +25,9 @@ const MANUAL_PREFIX = "irrviz2-manual-v2:";       // + id de position : historiq
 const LEGACY_KEY = "irrviz2-state-v1";            // IRRViz 2, version mono-position
 const LEGACY_CANDLES_KEY = "irrviz2-candles-v1";
 const V1_STORAGE_KEY = "mwviz-state-v1";          // IRRViz v1 (même origine)
+const SYNC_KEY = "irrviz2-sync-v2";               // réglages et état de la synchronisation (jeton compris)
 const UNDO_LIMIT = 100;
+const TOMBSTONE_LIMIT = 1000;
 
 const DEFAULT_THRESHOLDS = [-10, 0, 3, 6, 10, 20, 35];
 
@@ -47,6 +55,7 @@ function defaultPosition(name = "Ma position"){
     name,
     autoName: true,         // le nom suit le symbole chargé tant que l'utilisateur ne l'a pas renommé
     createdAt: Date.now(),
+    modifiedAt: Date.now(), // dernière modification des données (fusion lors de la synchronisation)
     transactions: [],
     thresholds: DEFAULT_THRESHOLDS.slice(),
     hiddenThresholds: [],
@@ -78,6 +87,7 @@ function sanitizePosition(raw, fallbackName = "Ma position"){
   if(typeof raw.name === "string" && raw.name.trim()) s.name = raw.name.trim().slice(0, 60);
   if(typeof raw.autoName === "boolean") s.autoName = raw.autoName;
   if(Number.isFinite(+raw.createdAt)) s.createdAt = +raw.createdAt;
+  s.modifiedAt = typeof raw.modifiedAt === "number" && Number.isFinite(raw.modifiedAt) ? raw.modifiedAt : s.createdAt;
   if(Array.isArray(raw.transactions)){
     s.transactions = raw.transactions
       .filter(t => t && typeof t === "object")
@@ -124,7 +134,19 @@ function sanitizeGlobal(raw){
   return g;
 }
 
-// Format persisté : { version: 2, activeId, positions: [...], proxyPort, ui }
+// Traces de suppression : { id de position: date de suppression }, limitées aux plus récentes.
+function sanitizeDeleted(raw){
+  const out = {};
+  if(!raw || typeof raw !== "object") return out;
+  Object.entries(raw)
+    .filter(([id, at]) => /^[\w-]{1,64}$/.test(id) && Number.isFinite(+at) && +at > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, TOMBSTONE_LIMIT)
+    .forEach(([id, at]) => { out[id] = +at; });
+  return out;
+}
+
+// Format persisté : { version: 2, activeId, positions: [...], deleted, orderAt, proxyPort, ui }
 function sanitizeApp(raw){
   const g = sanitizeGlobal(raw);
   const list = raw && Array.isArray(raw.positions) ? raw.positions : [];
@@ -138,7 +160,10 @@ function sanitizeApp(raw){
   });
   if(!positions.length) return null;
   const activeId = raw && ids.has(raw.activeId) ? raw.activeId : positions[0].id;
-  return { version: 2, activeId, positions, proxyPort: g.proxyPort, ui: g.ui };
+  const deleted = sanitizeDeleted(raw.deleted);
+  ids.forEach(id => { delete deleted[id]; });
+  const orderAt = Number.isFinite(+raw.orderAt) ? +raw.orderAt : 0;
+  return { version: 2, activeId, positions, deleted, orderAt, proxyPort: g.proxyPort, ui: g.ui };
 }
 
 // Nom initial d'une position reprise d'un ancien format : son symbole s'il existe.
@@ -154,7 +179,7 @@ function migrateLegacy(legacy, legacyCandles){
   if(!legacy || typeof legacy !== "object" || !Array.isArray(legacy.transactions)) return null;
   const pos = migratedPosition(legacy);
   const g = sanitizeGlobal(legacy);
-  const app = { version: 2, activeId: pos.id, positions: [pos], proxyPort: g.proxyPort, ui: g.ui };
+  const app = { version: 2, activeId: pos.id, positions: [pos], deleted: {}, orderAt: 0, proxyPort: g.proxyPort, ui: g.ui };
   let prices = null;
   if(legacyCandles && legacyCandles.ticker && legacyCandles.ticker === pos.assetTicker && Array.isArray(legacyCandles.rows)){
     prices = Object.assign({ source: "yahoo" }, legacyCandles);
@@ -174,38 +199,48 @@ function migrateV1(v1){
   });
   if(!pos.transactions.length) return null;
   const g = sanitizeGlobal(null);
-  return { version: 2, activeId: pos.id, positions: [pos], proxyPort: g.proxyPort, ui: g.ui };
+  return { version: 2, activeId: pos.id, positions: [pos], deleted: {}, orderAt: 0, proxyPort: g.proxyPort, ui: g.ui };
 }
 
-function readJson(key){
-  try{
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : null;
-  }catch(e){ return null; }
+/* Accès au stockage (localStorage par défaut ; un autre objet de même interface
+   pour les tests, qui simulent ainsi plusieurs appareils). Toute erreur est
+   absorbée : stockage bloqué, quota dépassé, JSON corrompu. */
+function defaultStorage(){
+  try{ return root.localStorage; }catch(e){ return null; }
 }
-function writeJson(key, value){
-  try{ localStorage.setItem(key, JSON.stringify(value)); return true; }
-  catch(e){ return false; }
+function createIo(storage){
+  const io = {
+    read(key){
+      try{
+        const raw = storage.getItem(key);
+        return raw ? JSON.parse(raw) : null;
+      }catch(e){ return null; }
+    },
+    write(key, value){
+      try{ storage.setItem(key, JSON.stringify(value)); return true; }
+      catch(e){ return false; }
+    },
+    remove(key){
+      try{ storage.removeItem(key); }catch(e){ /* ignore */ }
+    },
+    /* Données volumineuses rangées hors de l'état principal, une clé par position :
+       cache Yahoo et historique importé. */
+    readPosData(id){
+      const o = {};
+      Object.entries(POS_PREFIXES).forEach(([k, pre]) => { o[k] = io.read(pre + id); });
+      return o;
+    },
+    writePosData(id, data){
+      if(!data) return;
+      Object.entries(POS_PREFIXES).forEach(([k, pre]) => { if(data[k]) io.write(pre + id, data[k]); });
+    },
+    removePosData(id){
+      Object.values(POS_PREFIXES).forEach(pre => io.remove(pre + id));
+    },
+  };
+  return io;
 }
-function removeKey(key){
-  try{ localStorage.removeItem(key); }catch(e){ /* ignore */ }
-}
-
-/* Données volumineuses rangées hors de l'état principal, une clé par position :
-   cache Yahoo et historique importé. */
 const POS_PREFIXES = { prices: PRICES_PREFIX, manual: MANUAL_PREFIX };
-function readPosData(id){
-  const o = {};
-  Object.entries(POS_PREFIXES).forEach(([k, pre]) => { o[k] = readJson(pre + id); });
-  return o;
-}
-function writePosData(id, data){
-  if(!data) return;
-  Object.entries(POS_PREFIXES).forEach(([k, pre]) => { if(data[k]) writeJson(pre + id, data[k]); });
-}
-function removePosData(id){
-  Object.values(POS_PREFIXES).forEach(pre => removeKey(pre + id));
-}
 
 /* Historique importé : { name, fileName, kind: "ohlc" | "close", importedAt, rows }
    où rows = [[s, o, h, l, c], …] (ohlc) ou [[s, c], …] (close). */
@@ -241,35 +276,228 @@ function loadSampleInto(pos){
 }
 
 /* ---------------------------------------------------------------------
+   Moteur de synchronisation (calcul pur, indépendant du service distant)
+
+   Un « document de synchronisation » est la copie des données partagées :
+     { positions: [...], manual: { id: historique importé }, deleted: { id: date }, orderAt }
+   Ni la vue du graphique, ni le cache Yahoo (retéléchargeable), ni les
+   préférences d'affichage n'en font partie : ils restent propres à l'appareil.
+
+   La fusion se fait position par position, par rapport à la « base » : l'empreinte
+   de chaque position lors de la dernière synchronisation réussie. Une position
+   modifiée d'un seul côté prend cette version ; modifiée des deux côtés, c'est un
+   conflit : la plus récente est gardée, l'autre est conservée pour que
+   l'utilisateur puisse choisir.
+   --------------------------------------------------------------------- */
+
+// Empreinte 53 bits (cyrb53) : suffisante pour détecter un changement de contenu.
+function hashString(str){
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for(let i = 0; i < str.length; i++){
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+// Historique importé tel que stocké, validé et mis sous forme canonique (null si vide ou illisible).
+function normalizeManual(raw){
+  const rec = decodeManual(raw);
+  if(!rec) return null;
+  const enc = encodeManual(rec);
+  enc.importedAt = Number.isFinite(+raw.importedAt) && raw.importedAt ? +raw.importedAt : null;
+  return enc;
+}
+
+// Champs synchronisés d'une position (sans la vue du graphique).
+function syncedPosition(pos){
+  const p = JSON.parse(JSON.stringify(pos));
+  delete p.view;
+  return p;
+}
+
+// Empreinte du contenu d'une position et de son historique importé (hors date de modification).
+function positionHash(pos, manual){
+  return hashString(JSON.stringify([
+    pos.name, pos.autoName, pos.createdAt,
+    pos.transactions.map(t => [t.id, t.iso, t.amount, t.quantity]),
+    pos.thresholds, pos.hiddenThresholds, pos.feePercent, pos.horizonIso, pos.assetTicker, pos.priceSource,
+    manual ? [manual.name, manual.fileName, manual.kind, manual.importedAt, manual.rows] : null,
+  ]));
+}
+
+// Empreinte d'un document entier : positions (contenu et ordre) et traces de suppression.
+function docHash(doc){
+  return hashString(JSON.stringify([
+    doc.positions.map(p => [p.id, positionHash(p, doc.manual[p.id])]),
+    Object.entries(doc.deleted).sort((a, b) => (a[0] < b[0] ? -1 : 1)),
+  ]));
+}
+
+function baseOf(doc){
+  const positions = {};
+  doc.positions.forEach(p => { positions[p.id] = positionHash(p, doc.manual[p.id]); });
+  return { positions };
+}
+
+/* Lit un fichier distant (sauvegarde complète ou fichier de synchronisation) et le
+   ramène à un document de synchronisation validé. Lève une erreur si le contenu
+   n'est pas une sauvegarde IRRViz : on n'écrase jamais un fichier inconnu. */
+function parseSyncDoc(raw){
+  const state = raw && typeof raw === "object" && raw.state && typeof raw.state === "object" ? raw.state : raw;
+  if(!state || typeof state !== "object" || !Array.isArray(state.positions)){
+    throw new Error("Ce fichier n'est pas une sauvegarde IRRViz.");
+  }
+  const positions = [];
+  const ids = new Set();
+  state.positions.forEach((p, i) => {
+    const pos = sanitizePosition(p, `Position ${i + 1}`);
+    if(ids.has(pos.id)) return;
+    ids.add(pos.id);
+    positions.push(syncedPosition(pos));
+  });
+  const manual = {};
+  const src = raw.manualPrices && typeof raw.manualPrices === "object" ? raw.manualPrices : {};
+  positions.forEach(p => { const m = normalizeManual(src[p.id]); if(m) manual[p.id] = m; });
+  const deleted = sanitizeDeleted(state.deleted);
+  ids.forEach(id => { delete deleted[id]; });
+  const orderAt = Number.isFinite(+state.orderAt) ? +state.orderAt : 0;
+  return { positions, manual, deleted, orderAt };
+}
+
+/* Fichier distant : même format que la sauvegarde complète (« Restaurer une
+   sauvegarde » l'accepte), indenté pour des différences lisibles sur GitHub. */
+function serializeSyncDoc(doc, { device = "" } = {}){
+  const file = {
+    app: "IRRViz2", version: 2, kind: "sync", exportedAt: new Date().toISOString(), device: device || undefined,
+    state: {
+      version: 2,
+      activeId: doc.positions.length ? doc.positions[0].id : null,
+      positions: doc.positions,
+      deleted: doc.deleted,
+      orderAt: doc.orderAt,
+    },
+    manualPrices: doc.manual,
+  };
+  return JSON.stringify(file, null, 2)
+    // Tableaux de nombres ou de chaînes, objets sans imbrication : sur une seule ligne.
+    .replace(/\[\n\s*([^[\]{}]*?)\n\s*\]/g, (m, inner) => `[${inner.split(/,\n\s*/).join(", ")}]`)
+    .replace(/\{\n\s*([^[\]{}]*?)\n\s*\}/g, (m, inner) => `{ ${inner.split(/,\n\s*/).join(", ")} }`)
+    + "\n";
+}
+
+/* Fusionne la copie locale et la copie distante.
+   `base` : { positions: { id: empreinte } } issue de la dernière synchronisation.
+   Renvoie { doc, conflicts } ; chaque conflit décrit la version écartée :
+     { id, name, at, kept: "local" | "remote", keptDeleted, other: { pos, manual } | null }
+   (other = null : l'autre côté avait supprimé la position). */
+function mergeSyncDocs(local, remote, base){
+  const baseHashes = (base && base.positions) || {};
+  const sides = { local, remote };
+  const maps = { local: new Map(local.positions.map(p => [p.id, p])), remote: new Map(remote.positions.map(p => [p.id, p])) };
+  const entry = (side, id) => {
+    const pos = maps[side].get(id);
+    return pos ? { side, pos, manual: sides[side].manual[id] || null, hash: positionHash(pos, sides[side].manual[id]) } : null;
+  };
+  const changed = (e, id) => e.hash !== baseHashes[id];
+
+  const deleted = {};
+  [local.deleted, remote.deleted].forEach(d => Object.entries(d).forEach(([id, at]) => { deleted[id] = Math.max(deleted[id] || 0, at); }));
+
+  const picked = new Map();
+  const conflicts = [];
+  const ids = [...new Set([...maps.local.keys(), ...maps.remote.keys()])];
+  ids.forEach(id => {
+    const l = entry("local", id), r = entry("remote", id);
+    if(l && r){
+      if(l.hash === r.hash) picked.set(id, l.pos.modifiedAt >= r.pos.modifiedAt ? l : r);
+      else if(!changed(r, id)) picked.set(id, l);
+      else if(!changed(l, id)) picked.set(id, r);
+      else {
+        // Modifiée des deux côtés depuis la dernière synchronisation : la plus récente l'emporte.
+        const win = l.pos.modifiedAt >= r.pos.modifiedAt ? l : r;
+        const lose = win === l ? r : l;
+        picked.set(id, win);
+        conflicts.push({ id, name: win.pos.name, at: Date.now(), kept: win.side, keptDeleted: false, other: { pos: lose.pos, manual: lose.manual } });
+      }
+      return;
+    }
+    const e = l || r;
+    const otherSide = sides[e.side === "local" ? "remote" : "local"];
+    // Déjà synchronisée, absente de l'autre côté sans trace de suppression (fichier modifié
+    // à la main sur GitHub, par exemple) et inchangée ici : elle a été retirée là-bas.
+    if(id in baseHashes && !changed(e, id) && !(id in otherSide.deleted)) return;
+    picked.set(id, e);
+  });
+
+  // Traces de suppression : une position ne survit que si elle a été modifiée après sa suppression.
+  Object.entries(deleted).forEach(([id, at]) => {
+    const e = picked.get(id);
+    if(!e) return;
+    const wasChanged = changed(e, id);
+    if(wasChanged && e.pos.modifiedAt > at){
+      delete deleted[id];
+      conflicts.push({ id, name: e.pos.name, at: Date.now(), kept: e.side, keptDeleted: false, other: null });
+    } else {
+      picked.delete(id);
+      if(wasChanged) conflicts.push({ id, name: e.pos.name, at: Date.now(), kept: e.side === "local" ? "remote" : "local", keptDeleted: true, other: { pos: e.pos, manual: e.manual } });
+    }
+  });
+
+  // Ordre : celui du côté qui l'a modifié en dernier, complété par les positions inconnues de ce côté.
+  const [first, second] = local.orderAt >= remote.orderAt ? [local, remote] : [remote, local];
+  const order = [];
+  [first, second].forEach(d => d.positions.forEach(p => { if(picked.has(p.id) && !order.includes(p.id)) order.push(p.id); }));
+
+  const manual = {};
+  order.forEach(id => { const m = picked.get(id).manual; if(m) manual[id] = m; });
+  const doc = {
+    positions: order.map(id => picked.get(id).pos),
+    manual,
+    deleted: sanitizeDeleted(deleted),
+    orderAt: Math.max(local.orderAt, remote.orderAt),
+  };
+  return { doc, conflicts };
+}
+
+const syncEngine = { hashString, normalizeManual, positionHash, docHash, baseOf, parseSyncDoc, serializeSyncDoc, mergeSyncDocs };
+
+/* ---------------------------------------------------------------------
    Store
    --------------------------------------------------------------------- */
 
-function createStore(){
+function createStore({ storage = defaultStorage() } = {}){
+  const io = createIo(storage);
   const listeners = new Set();
+  const dataListeners = new Set();
   let app = null;
   let origin = "saved"; // fresh | saved | legacy | v1
   const history = new Map(); // id de position -> { undo, redo, last }
 
-  app = sanitizeApp(readJson(STORAGE_KEY));
+  app = sanitizeApp(io.read(STORAGE_KEY));
   if(!app){
-    const legacy = migrateLegacy(readJson(LEGACY_KEY), readJson(LEGACY_CANDLES_KEY));
+    const legacy = migrateLegacy(io.read(LEGACY_KEY), io.read(LEGACY_CANDLES_KEY));
     if(legacy){
       app = legacy.app;
       origin = "legacy";
-      if(legacy.prices) writeJson(PRICES_PREFIX + app.activeId, legacy.prices);
+      if(legacy.prices) io.write(PRICES_PREFIX + app.activeId, legacy.prices);
     } else {
-      app = migrateV1(readJson(V1_STORAGE_KEY));
+      app = migrateV1(io.read(V1_STORAGE_KEY));
       if(app) origin = "v1";
     }
   }
   if(!app){
     const pos = defaultPosition("Exemple");
     loadSampleInto(pos);
-    app = { version: 2, activeId: pos.id, positions: [pos], proxyPort: 8765, ui: defaultUi() };
+    app = { version: 2, activeId: pos.id, positions: [pos], deleted: {}, orderAt: 0, proxyPort: 8765, ui: defaultUi() };
     origin = "fresh";
   }
 
   const active = () => app.positions.find(p => p.id === app.activeId) || app.positions[0];
+  const findPos = id => app.positions.find(p => p.id === id);
   const globalView = {
     get ui(){ return app.ui; },
     get proxyPort(){ return app.proxyPort; },
@@ -281,11 +509,24 @@ function createStore(){
     return history.get(id);
   }
 
-  const persist = () => { writeJson(STORAGE_KEY, app); };
+  const persist = () => { io.write(STORAGE_KEY, app); };
   const persistSoon = U.debounce(persist, 250);
   if(origin !== "saved") persist();
 
   function emit(kind){ listeners.forEach(fn => fn(kind)); }
+
+  /* Marque une modification des données synchronisées : date de modification de la
+     position (strictement croissante), puis avis aux abonnés (synchronisation). */
+  const stamp = prev => Math.max(Date.now(), (prev || 0) + 1);
+  function touch(pos){
+    if(pos){
+      pos.modifiedAt = stamp(pos.modifiedAt);
+      delete app.deleted[pos.id];
+    }
+    dataListeners.forEach(fn => fn());
+  }
+  function touchOrder(){ app.orderAt = stamp(app.orderAt); }
+  function markDeleted(id){ app.deleted[id] = Date.now(); }
 
   /* Enregistre un point d'annulation AVANT une modification. Les modifications
      successives portant la même `key` en moins de 1,5 s (frappe dans un champ)
@@ -325,9 +566,40 @@ function createStore(){
   function insertPosition(pos, index = app.positions.length){
     app.positions.splice(index, 0, pos);
     app.activeId = pos.id;
+    touchOrder();
+    touch(pos);
     persist();
     emit("switch");
     return pos.id;
+  }
+
+  /* Remplace toutes les positions (restauration d'une sauvegarde, ou son annulation) :
+     les positions écartées laissent une trace de suppression, les autres sont datées
+     de maintenant pour l'emporter lors de la prochaine synchronisation. */
+  function replaceApp(next){
+    const keep = new Set(next.positions.map(p => p.id));
+    const deleted = Object.assign({}, next.deleted, app.deleted);
+    app.positions.forEach(p => { if(!keep.has(p.id)) deleted[p.id] = Date.now(); });
+    app = next;
+    app.deleted = deleted;
+    touchOrder();
+    app.positions.forEach(p => { p.modifiedAt = stamp(p.modifiedAt); delete app.deleted[p.id]; });
+    touch(null);
+  }
+
+  // Historique importé tel que stocké, sous forme canonique.
+  const readManualRaw = id => normalizeManual(io.read(MANUAL_PREFIX + id));
+
+  function syncSnapshot(){
+    persistSoon.flush();
+    const manual = {};
+    app.positions.forEach(p => { const m = readManualRaw(p.id); if(m) manual[p.id] = m; });
+    return {
+      positions: app.positions.map(syncedPosition),
+      manual,
+      deleted: Object.assign({}, app.deleted),
+      orderAt: app.orderAt,
+    };
   }
 
   return {
@@ -337,12 +609,15 @@ function createStore(){
     get activeId(){ return app.activeId; },
     get origin(){ return origin; },
     subscribe(fn){ listeners.add(fn); return () => listeners.delete(fn); },
+    // Avertit de toute modification des données synchronisées (pas des préférences d'affichage).
+    onDataChange(fn){ dataListeners.add(fn); return () => dataListeners.delete(fn); },
 
     /* Applique une modification métier à la position active. kind : "data" (rendu
        complet) | "soft" (valeurs éditées en place : pas de reconstruction des listes). */
     update(mutator, { key = null, kind = "data", undoable = true } = {}){
       if(undoable) checkpoint(key);
       mutator(active());
+      touch(active());
       persistSoon();
       emit(kind);
     },
@@ -365,6 +640,7 @@ function createStore(){
       h.redo.push(snapshot(active()));
       restore(h.undo.pop());
       h.last = { key: null, at: 0 };
+      touch(active());
       persistSoon();
       emit("reset");
       return true;
@@ -375,6 +651,7 @@ function createStore(){
       h.undo.push(snapshot(active()));
       restore(h.redo.pop());
       h.last = { key: null, at: 0 };
+      touch(active());
       persistSoon();
       emit("reset");
       return true;
@@ -385,6 +662,7 @@ function createStore(){
     loadSample(){
       checkpoint(null);
       loadSampleInto(active());
+      touch(active());
       persistSoon();
       emit("reset");
     },
@@ -425,7 +703,7 @@ function createStore(){
       copy.autoName = false;
       copy.createdAt = Date.now();
       copy.transactions.forEach(t => { t.id = U.makeId(); });
-      writePosData(copy.id, readPosData(src.id));
+      io.writePosData(copy.id, io.readPosData(src.id));
       return insertPosition(copy, app.positions.indexOf(src) + 1);
     },
 
@@ -435,6 +713,7 @@ function createStore(){
       if(!pos || !trimmed || trimmed === pos.name) return false;
       pos.name = trimmed;
       pos.autoName = false;
+      touch(pos);
       persistSoon();
       emit("positions");
       return true;
@@ -445,6 +724,7 @@ function createStore(){
       const pos = app.positions.find(p => p.id === id);
       if(!pos || !pos.autoName || !name || pos.name === name) return;
       pos.name = uniqueName(name);
+      touch(pos);
       persistSoon();
       emit("positions");
     },
@@ -460,17 +740,20 @@ function createStore(){
         pos: JSON.parse(JSON.stringify(pos)),
         index,
         wasActive: id === app.activeId,
-        data: readPosData(id),
+        data: io.readPosData(id),
         history: history.get(id) || null,
       };
       app.positions.splice(index, 1);
       history.delete(id);
-      removePosData(id);
+      io.removePosData(id);
+      markDeleted(id);
+      let fresh = null;
       if(!app.positions.length){
-        const fresh = defaultPosition("Ma position");
+        fresh = defaultPosition("Ma position");
         app.positions.push(fresh);
       }
       if(token.wasActive) app.activeId = app.positions[Math.min(index, app.positions.length - 1)].id;
+      touch(fresh);
       persist();
       emit(token.wasActive ? "switch" : "positions");
       return token;
@@ -480,13 +763,16 @@ function createStore(){
       if(!token || app.positions.some(p => p.id === token.pos.id)) return;
       // Si la position supprimée était la seule, on retire la position vide créée à sa place.
       if(app.positions.length === 1 && !app.positions[0].transactions.length && app.positions[0].autoName){
+        markDeleted(app.positions[0].id);
         app.positions = [];
       }
-      writePosData(token.pos.id, token.data);
+      io.writePosData(token.pos.id, token.data);
       if(token.history) history.set(token.pos.id, token.history);
       const pos = sanitizePosition(token.pos);
       app.positions.splice(Math.min(token.index, app.positions.length), 0, pos);
       if(token.wasActive || !app.positions.some(p => p.id === app.activeId)) app.activeId = pos.id;
+      touchOrder();
+      touch(pos);
       persist();
       emit("switch");
     },
@@ -497,6 +783,8 @@ function createStore(){
       if(i < 0 || j < 0 || j >= app.positions.length) return;
       const [pos] = app.positions.splice(i, 1);
       app.positions.splice(j, 0, pos);
+      touchOrder();
+      touch(null);
       persistSoon();
       emit("positions");
     },
@@ -507,7 +795,7 @@ function createStore(){
       persistSoon.flush();
       const prices = {}, manualPrices = {};
       app.positions.forEach(p => {
-        const d = readPosData(p.id);
+        const d = io.readPosData(p.id);
         if(d.prices) prices[p.id] = d.prices;
         if(d.manual) manualPrices[p.id] = d.manual;
       });
@@ -527,20 +815,20 @@ function createStore(){
       const full = sanitizeApp(data);
       if(full && data && Array.isArray(data.positions)){
         const previous = { app: JSON.parse(JSON.stringify(app)), data: {} };
-        app.positions.forEach(p => { previous.data[p.id] = readPosData(p.id); removePosData(p.id); });
-        app = full;
+        app.positions.forEach(p => { previous.data[p.id] = io.readPosData(p.id); io.removePosData(p.id); });
+        replaceApp(full);
         history.clear();
         const pick = (map, id) => (map && typeof map === "object" ? map[id] : null) || null;
-        app.positions.forEach(p => writePosData(p.id, { prices: pick(raw.prices, p.id), manual: pick(raw.manualPrices, p.id) }));
+        app.positions.forEach(p => io.writePosData(p.id, { prices: pick(raw.prices, p.id), manual: pick(raw.manualPrices, p.id) }));
         persist();
         emit("switch");
         return {
           mode: "all",
           count: app.positions.length,
           undo: () => {
-            app.positions.forEach(p => removePosData(p.id));
-            app = previous.app;
-            Object.entries(previous.data).forEach(([id, d]) => writePosData(id, d));
+            app.positions.forEach(p => io.removePosData(p.id));
+            replaceApp(previous.app);
+            Object.entries(previous.data).forEach(([id, d]) => io.writePosData(id, d));
             history.clear();
             persist();
             emit("switch");
@@ -563,7 +851,7 @@ function createStore(){
        affichage immédiat au chargement et un mode dégradé sans proxy.
        Format : { source: "yahoo", ticker, currency, fetchedAt, rows: [[s, o, h, l, c], …] } */
     readCandleCache(ticker, posId = app.activeId){
-      const c = readJson(PRICES_PREFIX + posId);
+      const c = io.read(PRICES_PREFIX + posId);
       if(!c || c.ticker !== ticker || !Array.isArray(c.rows)) return null;
       return {
         fetchedAt: c.fetchedAt,
@@ -575,29 +863,125 @@ function createStore(){
       if(!app.positions.some(p => p.id === posId)) return;
       const round = v => Math.round(v * 1e4) / 1e4;
       const rows = candles.map(c => [Math.round(c.ms / 1000), round(c.open), round(c.high), round(c.low), round(c.close)]);
-      writeJson(PRICES_PREFIX + posId, { source: "yahoo", ticker, currency, fetchedAt: Date.now(), rows });
+      io.write(PRICES_PREFIX + posId, { source: "yahoo", ticker, currency, fetchedAt: Date.now(), rows });
     },
     clearCandleCache(posId = app.activeId){
-      removeKey(PRICES_PREFIX + posId);
+      io.remove(PRICES_PREFIX + posId);
     },
 
-    /* Historique de cours importé (CSV), propre à chaque position.
+    /* Historique de cours importé (CSV), propre à chaque position et synchronisé.
        readManualPrices → { name, fileName, kind, importedAt, candles } | null */
     readManualPrices(posId = app.activeId){
-      return decodeManual(readJson(MANUAL_PREFIX + posId));
+      return decodeManual(io.read(MANUAL_PREFIX + posId));
     },
     // Renvoie false si le navigateur refuse l'écriture (quota localStorage dépassé).
     writeManualPrices(rec, posId = app.activeId){
-      if(!app.positions.some(p => p.id === posId)) return false;
-      return writeJson(MANUAL_PREFIX + posId, encodeManual(rec));
+      const pos = findPos(posId);
+      if(!pos) return false;
+      const ok = io.write(MANUAL_PREFIX + posId, encodeManual(rec));
+      if(ok){ touch(pos); persistSoon(); }
+      return ok;
     },
     clearManualPrices(posId = app.activeId){
-      removeKey(MANUAL_PREFIX + posId);
+      io.remove(MANUAL_PREFIX + posId);
+      const pos = findPos(posId);
+      if(pos){ touch(pos); persistSoon(); }
     },
+
+    /* ---------------- Synchronisation entre appareils ---------------- */
+
+    // Copie locale des données synchronisées (voir syncEngine).
+    syncSnapshot,
+
+    /* Applique un document fusionné (ou la copie distante). Les modifications venues
+       d'ailleurs ne changent pas les dates de modification et effacent l'historique
+       annuler / rétablir des positions concernées (il rétablirait des données périmées).
+       Renvoie la liste des positions modifiées, ajoutées ou retirées. */
+    syncApply(doc){
+      persistSoon.flush();
+      const before = new Map(app.positions.map(p => [p.id, p]));
+      const prevOrder = app.positions.map(p => p.id).join();
+      const changed = new Set();
+      const next = doc.positions.map(p => {
+        const cur = before.get(p.id);
+        const localManual = cur ? readManualRaw(p.id) : null;
+        const remoteManual = doc.manual[p.id] || null;
+        if(!cur || positionHash(cur, localManual) !== positionHash(p, remoteManual)){
+          changed.add(p.id);
+          if(remoteManual) io.write(MANUAL_PREFIX + p.id, remoteManual);
+          else io.remove(MANUAL_PREFIX + p.id);
+        }
+        const pos = sanitizePosition(JSON.parse(JSON.stringify(p)));
+        pos.modifiedAt = p.modifiedAt;
+        pos.view = cur ? cur.view : null;
+        return pos;
+      });
+      const keep = new Set(next.map(p => p.id));
+      before.forEach((p, id) => { if(!keep.has(id)){ io.removePosData(id); changed.add(id); } });
+      changed.forEach(id => history.delete(id));
+      const wasActive = app.activeId;
+      app.positions = next;
+      app.deleted = sanitizeDeleted(doc.deleted);
+      app.orderAt = doc.orderAt;
+      let fresh = null;
+      if(!app.positions.length){
+        fresh = defaultPosition("Ma position");
+        app.positions.push(fresh);
+      }
+      if(!keep.has(app.activeId)) app.activeId = app.positions[0].id;
+      if(fresh) touch(fresh);
+      persist();
+      if(app.activeId !== wasActive) emit("switch");
+      else if(changed.has(app.activeId)) emit("sync");
+      else if(changed.size || prevOrder !== app.positions.map(p => p.id).join()) emit("positions");
+      return [...changed];
+    },
+
+    /* Reprend une version écartée lors d'un conflit : remplace la position de même
+       identifiant (ou la recrée), ou l'ajoute comme copie (`asCopy`). */
+    syncAdopt({ pos: raw, manual }, { asCopy = false } = {}){
+      const pos = sanitizePosition(JSON.parse(JSON.stringify(raw)));
+      pos.view = null;
+      if(asCopy){
+        pos.id = U.makeId("p");
+        pos.name = uniqueName(`${pos.name} (autre version)`);
+        pos.autoName = false;
+        pos.transactions.forEach(t => { t.id = U.makeId(); });
+      }
+      const index = app.positions.findIndex(p => p.id === pos.id);
+      if(manual) io.write(MANUAL_PREFIX + pos.id, manual); else io.remove(MANUAL_PREFIX + pos.id);
+      if(index >= 0){
+        pos.view = app.positions[index].view;
+        app.positions[index] = pos;
+        history.delete(pos.id);
+        app.activeId = pos.id;
+        touch(pos);
+        persist();
+        emit("switch");
+        return pos.id;
+      }
+      return insertPosition(pos, asCopy ? app.positions.findIndex(p => p.id === raw.id) + 1 || app.positions.length : app.positions.length);
+    },
+
+    // Rien que l'exemple de départ (ou une position vide) : rien à perdre en reprenant les données distantes.
+    isPristine(){
+      if(app.positions.length !== 1) return false;
+      const p = app.positions[0];
+      if(io.read(MANUAL_PREFIX + p.id)) return false;
+      const sample = SAMPLE_TRANSACTIONS.map(t => [t.iso, t.amount, t.quantity]).join();
+      return !p.transactions.length || p.transactions.map(t => [t.iso, t.amount, t.quantity]).join() === sample;
+    },
+
+    // Réglages et état de la synchronisation (clé distincte, jamais incluse dans les sauvegardes).
+    readSyncMeta(){ return io.read(SYNC_KEY); },
+    writeSyncMeta(meta){ return meta ? io.write(SYNC_KEY, meta) : (io.remove(SYNC_KEY), true); },
   };
 }
 
-IRR.store = { createStore, DEFAULT_THRESHOLDS, sanitizePosition, sanitizeApp, migrateLegacy, migrateV1, encodeManual, decodeManual, STORAGE_KEY };
+IRR.store = {
+  createStore, DEFAULT_THRESHOLDS, sanitizePosition, sanitizeApp, migrateLegacy, migrateV1, encodeManual, decodeManual,
+  syncEngine, STORAGE_KEY, SYNC_KEY,
+};
 
 if(typeof module !== "undefined" && module.exports) module.exports = IRR.store;
 
