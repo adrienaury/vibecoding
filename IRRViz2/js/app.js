@@ -1483,6 +1483,7 @@ const sy = {
   tokenBox: $("syncTokenBox"), newToken: $("syncNewToken"), newExpiry: $("syncNewExpiry"), btnToken: $("btnSyncToken"),
   btnTest: $("btnSyncTest"), btnMain: $("btnSyncMain"), btnDisconnect: $("btnSyncDisconnect"),
   btn: $("btnSync"), note: $("storageNote"),
+  diag: $("syncDiag"), diagBody: $("syncDiagBody"), btnFull: $("btnSyncFull"),
 };
 
 let syncTested = null;     // dernier test réussi : { key, config, res }
@@ -1648,6 +1649,36 @@ function renderSyncStatus(st){
     ? `<h3 class="sync-h">Versions à vérifier</h3>${st.conflicts.map(conflictHtml).join("")}`
     : "";
   if(st.state === "auth" || st.warning) sy.tokenBox.open = true;
+  if(st.error && st.error.code === "storage") sy.diag.open = true;
+  renderSyncDiag(st);
+}
+
+/* Diagnostic : version des scripts, place occupée dans le stockage, et pour chaque position
+   suivie sur Yahoo, les cours présents dans le dernier fichier lu et sur cet appareil. */
+function renderSyncDiag(st){
+  const lines = [];
+  const pageVersion = (document.querySelector('meta[name="irrviz-version"]') || {}).content;
+  lines.push(pageVersion && pageVersion !== U.VERSION
+    ? syncLine("err", `Scripts en version <code>${U.escapeHtml(U.VERSION)}</code>, page en version <code>${U.escapeHtml(pageVersion)}</code> : fermez l'application et rouvrez-la avec une bonne connexion.`)
+    : syncLine("ok", `Application à jour : version <code>${U.escapeHtml(U.VERSION)}</code>.`));
+  const use = store.storageUsage();
+  if(use){
+    const mo = n => (n * 2 / 1048576).toLocaleString("fr-FR", { maximumFractionDigits: 2 });
+    lines.push(syncLine(use.chars * 2 > 4.5 * 1048576 ? "warn" : "ok", `Stockage du navigateur : environ ${mo(use.chars)} Mo utilisés (${use.keys} clés) sur environ 5 Mo, partagés avec les autres pages de ce site.`));
+  }
+  const r = st.lastRead;
+  if(r){
+    lines.push(syncLine("ok", `Dernière lecture du dépôt ${timeAgo(r.at)} : ${r.positions} position${r.positions > 1 ? "s" : ""}, ${Math.round(r.size / 1024)} Ko${r.outcome ? `, ${r.outcome}` : ""}.`));
+  }
+  store.positions.filter(p => p.assetTicker && p.priceSource === "yahoo").forEach(p => {
+    const local = store.readCandleCache(p.assetTicker, p.id);
+    const remote = r && r.prices[p.id];
+    const here = local ? `${local.candles.length} séances jusqu'au ${U.fmtDate(local.candles[local.candles.length - 1].ms)}` : "aucune séance";
+    const there = !r ? "fichier non lu" : remote ? `${remote.count} séances (${U.escapeHtml(remote.ticker)}) jusqu'au ${U.fmtDate(remote.last)}` : "aucune séance";
+    const ok = local && (!remote || local.candles.length >= remote.count);
+    lines.push(syncLine(ok ? "ok" : "warn", `<b>${U.escapeHtml(p.name)}</b> (${U.escapeHtml(p.assetTicker)}) — sur cet appareil : ${here} ; dans le dépôt : ${there}.`));
+  });
+  sy.diagBody.innerHTML = lines.join("");
 }
 
 function renderSyncFooter(){
@@ -1743,6 +1774,12 @@ function initSync(){
       else if(!sync.configured) connectSync();
     }
   });
+  sy.btnFull.addEventListener("click", async () => {
+    try{
+      const res = await sync.resyncAll();
+      if(res) toast(`Resynchronisé : ${res.prices.length} série${res.prices.length > 1 ? "s" : ""} de cours reçue${res.prices.length > 1 ? "s" : ""}.`, { type: "success", timeout: 4000 });
+    }catch(e){ /* l'erreur est affichée dans la fenêtre */ }
+  });
   sy.btnToken.addEventListener("click", async () => {
     const token = sy.newToken.value.trim();
     if(!token){ sy.newToken.classList.add("invalid"); sy.newToken.focus(); return; }
@@ -1771,6 +1808,11 @@ function initSync(){
   setInterval(() => { const st = sync.status; renderSyncButton(st); if(sy.dialog.open && st.state !== "off") renderSyncStatus(st); }, 30000);
 
   sync.start();
+  // Page et scripts de versions différentes (cache) : proposer de recharger.
+  const pageVersion = (document.querySelector('meta[name="irrviz-version"]') || {}).content;
+  if(pageVersion && pageVersion !== U.VERSION){
+    toast("Mise à jour incomplète : certains fichiers viennent d'une ancienne version.", { type: "error", timeout: 15000, action: { label: "Recharger", fn: () => location.reload() } });
+  }
   const st = sync.status;
   if(st.warning) toast(st.warning, { timeout: 8000, action: { label: "Remplacer", fn: openSync } });
 }

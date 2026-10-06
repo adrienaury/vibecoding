@@ -213,7 +213,13 @@ function makeId(prefix = "t"){
   return `${prefix}${Date.now().toString(36)}${uid.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
+/* Version de l'application : la même valeur figure dans index.html (meta irrviz-version).
+   À changer à chaque mise en ligne d'une évolution : un écart entre les deux révèle des
+   scripts d'une ancienne version servis avec une page récente (cache). */
+const VERSION = "2026.10.06-2";
+
 IRR.util = {
+  VERSION,
   DAY, YEAR_DAYS,
   ymdToMs, isoToMs, msToIso, parseDate, fmtDate, fmtMonth, todayMs, addMonths,
   parseNum,

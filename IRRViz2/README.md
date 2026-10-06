@@ -19,6 +19,8 @@ IRRViz 2 est une **application web progressive (PWA)** : servie en `https://` (o
 - Les données restent dans le `localStorage` du navigateur. Sur iPhone / iPad, l'application installée a **son propre stockage**, séparé de Safari : exportez une sauvegarde JSON depuis Safari puis restaurez-la dans l'application.
 - Ouverte directement depuis le disque (`file://`), l'application fonctionne comme avant, mais sans installation ni mode hors ligne (les navigateurs n'autorisent pas les service workers dans ce cas).
 
+Le service worker revalide chaque fichier auprès du serveur (cache HTTP en `no-cache`) : une page récente n'est plus servie avec des scripts d'une version précédente.
+
 Pour les développeurs : la liste des fichiers mis en cache est `APP_SHELL` dans `sw.js`. Un test vérifie qu'elle contient tout ce que charge `index.html` ; incrémentez `VERSION` quand vous ajoutez, renommez ou supprimez un fichier, pour purger l'ancien cache.
 
 ## Synchroniser entre appareils (GitHub)
@@ -46,6 +48,7 @@ Sur iPhone / iPad, l'application installée a son propre stockage, séparé de S
 - **Fusion par position** : chaque position porte sa date de modification ; une position modifiée sur un seul appareil depuis la dernière synchronisation prend cette version. Une position supprimée laisse une trace et ne réapparaît pas, sauf si elle a été modifiée ailleurs après sa suppression.
 - **Conflits** : si un autre appareil a écrit entre la lecture et l'écriture, GitHub refuse l'écriture (le `sha` de la version remplacée ne correspond plus) : IRRViz relit, fusionne et réécrit. Une même position modifiée sur deux appareils : la plus récente est gardée et l'autre version est proposée (*Reprendre l'autre version*, *Garder les deux*, *Garder celle-ci*).
 - **État affiché** par le bouton nuage : synchronisé (vert), modifications en attente ou hors ligne (orange), conflit, jeton à remplacer ou erreur (rouge). Un fichier distant qui n'est pas une sauvegarde IRRViz n'est jamais écrasé.
+- **Diagnostic** (fenêtre de synchronisation › *Diagnostic*) : version de l'application (un écart entre la page et les scripts signale des fichiers d'une ancienne version restés en cache), place occupée dans le stockage du navigateur (environ 5 Mo par site, partagés avec les autres pages de `adrienaury.github.io`), dernière lecture du dépôt, et pour chaque position suivie sur Yahoo, les séances présentes sur l'appareil et dans le dépôt. *Tout resynchroniser* relit le fichier et refait la fusion, sans rien effacer. Si le navigateur refuse d'enregistrer des données reçues (stockage plein), la synchronisation passe en erreur au lieu de l'ignorer.
 - **Sécurité** : le jeton est stocké dans ce navigateur (clé `irrviz2-sync-v2`), envoyé uniquement à `api.github.com`, et n'apparaît ni dans le fichier synchronisé ni dans les sauvegardes JSON. Grâce à la portée fine, un jeton divulgué ne donne accès qu'à ce dépôt. Une politique de sécurité de contenu (CSP) n'autorise que les scripts de l'application et les connexions vers le proxy local et `api.github.com`. *Déconnecter cet appareil* efface le jeton ; les données restent sur l'appareil et dans le dépôt.
 
 ## Plusieurs positions

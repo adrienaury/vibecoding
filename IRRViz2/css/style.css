@@ -302,6 +302,9 @@ input[type="date"]::-webkit-calendar-picker-indicator{ cursor: pointer; opacity:
 .sync-conflict p{ margin: 0 0 8px; }
 .sync-actions{ display: flex; flex-wrap: wrap; gap: 6px; }
 #syncTokenBox{ margin-top: 14px; }
+#syncDiag{ margin-top: 10px; }
+.sync-diag{ display: flex; flex-direction: column; gap: 6px; margin: 10px 0 6px; }
+#syncDiag > .btn{ margin-top: 4px; }
 .foot-spacer{ flex: 1; }
 .btn.danger-text{ color: var(--neg); }
 .btn[hidden]{ display: none; }

@@ -11,6 +11,7 @@
      impose de recalculer son empreinte (test pwa.test.js). -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OOFdLNJE0glN+nEZ2W31pnAItPSLEoH5UR27sR0r2UM='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.github.com http://127.0.0.1:*; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'" />
 <meta name="theme-color" content="#0b0e14" />
+<meta name="irrviz-version" content="2026.10.06-2" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0e14'/%3E%3Cpath d='M5 25 C11 23 15 17 27 7' stroke='%236fcf5a' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M5 25 C12 24 17 20 27 15' stroke='%23f0b429' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M5 25 C13 25 19 23 27 22' stroke='%23dd6a2e' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
@@ -514,6 +515,14 @@
           </label>
         </div>
         <button class="btn small" type="button" id="btnSyncToken">Enregistrer et synchroniser</button>
+      </details>
+      <details class="sub" id="syncDiag">
+        <summary>Diagnostic</summary>
+        <div class="sync-diag" id="syncDiagBody">
+          <div class="sync-line err"><span>Scripts d'une ancienne version : fermez l'application et rouvrez-la avec une bonne connexion.</span></div>
+        </div>
+        <p class="hint">Version de la page : <code>2026.10.06-2</code>.</p>
+        <button class="btn small" type="button" id="btnSyncFull" title="Relit tout le fichier du dépôt et refait la fusion, sans rien effacer">Tout resynchroniser</button>
       </details>
     </div>
 
