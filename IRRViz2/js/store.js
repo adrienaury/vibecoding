@@ -279,9 +279,14 @@ function loadSampleInto(pos){
    Moteur de synchronisation (calcul pur, indépendant du service distant)
 
    Un « document de synchronisation » est la copie des données partagées :
-     { positions: [...], manual: { id: historique importé }, deleted: { id: date }, orderAt }
-   Ni la vue du graphique, ni le cache Yahoo (retéléchargeable), ni les
-   préférences d'affichage n'en font partie : ils restent propres à l'appareil.
+     { positions: [...], manual: { id: historique importé }, prices: { id: cours Yahoo },
+       deleted: { id: date }, orderAt }
+   Ni la vue du graphique ni les préférences d'affichage n'en font partie : elles
+   restent propres à l'appareil.
+
+   Les cours Yahoo (téléchargés par le proxy local, absent d'un iPad) voyagent avec
+   la position mais ont leur propre fusion : union des séances par date, sans
+   conflit ni date de modification. Une séance connue n'est jamais effacée.
 
    La fusion se fait position par position, par rapport à la « base » : l'empreinte
    de chaque position lors de la dernière synchronisation réussie. Une position
@@ -312,6 +317,74 @@ function normalizeManual(raw){
   return enc;
 }
 
+/* ---------------- Cours Yahoo : séries de séances ----------------
+   Format stocké (clé irrviz2-prices-v2:<id>, champ `prices` des sauvegardes) :
+   { source: "yahoo", ticker, currency, name, exchange, fetchedAt (ms),
+     from (s : début de la période déjà demandée), splits: [s, …] (divisions
+     d'actions déjà appliquées), rows: [[s, o, h, l, c], …] } */
+
+const round4 = v => Math.round(v * 1e4) / 1e4;
+const strOrNull = v => (typeof v === "string" && v ? v.slice(0, 80) : null);
+
+// Série relue (stockage, fichier distant) : validée, triée, sans doublon ; null si vide ou illisible.
+function normalizePrices(raw){
+  if(!raw || typeof raw !== "object" || typeof raw.ticker !== "string" || !raw.ticker.trim() || !Array.isArray(raw.rows)) return null;
+  const byTs = new Map();
+  raw.rows.forEach(r => {
+    if(!Array.isArray(r) || r.length < 5) return;
+    const v = r.slice(0, 5).map(Number);
+    if(v.every(Number.isFinite)) byTs.set(Math.round(v[0]), [Math.round(v[0]), round4(v[1]), round4(v[2]), round4(v[3]), round4(v[4])]);
+  });
+  const rows = [...byTs.values()].sort((a, b) => a[0] - b[0]);
+  if(!rows.length) return null;
+  const splits = Array.isArray(raw.splits) ? [...new Set(raw.splits.map(Number).filter(Number.isFinite).map(Math.round))].sort((a, b) => a - b) : [];
+  return {
+    source: "yahoo",
+    ticker: raw.ticker.trim().toUpperCase(),
+    currency: strOrNull(raw.currency),
+    name: strOrNull(raw.name),
+    exchange: strOrNull(raw.exchange),
+    fetchedAt: Number.isFinite(+raw.fetchedAt) ? +raw.fetchedAt : 0,
+    from: Number.isFinite(+raw.from) && raw.from !== null ? Math.min(Math.round(+raw.from), rows[0][0]) : rows[0][0],
+    splits,
+    rows,
+  };
+}
+
+// Union de deux listes de séances par date : celles de `incoming` remplacent, les autres restent.
+function mergeRows(base, incoming){
+  const byTs = new Map(base.map(r => [r[0], r]));
+  incoming.forEach(r => byTs.set(r[0], r));
+  return [...byTs.values()].sort((a, b) => a[0] - b[0]);
+}
+
+// Empreinte du contenu d'une série (sans la date de téléchargement : un téléchargement sans nouveauté ne change rien).
+function pricesHash(series){
+  return series ? hashString(JSON.stringify([series.ticker, series.currency, series.rows])) : null;
+}
+
+/* Fusion de deux copies de la série d'une position (deux appareils) : seules comptent
+   celles du symbole de la position ; pour une même date, la copie téléchargée le
+   plus récemment l'emporte ; aucune séance n'est perdue. */
+function mergePriceSeries(a, b, ticker){
+  const t = (ticker || "").toUpperCase();
+  const keep = x => (x && t && x.ticker === t ? x : null);
+  a = keep(a); b = keep(b);
+  if(!a || !b) return a || b;
+  const [older, newer] = a.fetchedAt <= b.fetchedAt ? [a, b] : [b, a];
+  return {
+    source: "yahoo",
+    ticker: t,
+    currency: newer.currency || older.currency,
+    name: newer.name || older.name,
+    exchange: newer.exchange || older.exchange,
+    fetchedAt: newer.fetchedAt,
+    from: Math.min(a.from, b.from),
+    splits: [...new Set([...a.splits, ...b.splits])].sort((x, y) => x - y),
+    rows: mergeRows(older.rows, newer.rows),
+  };
+}
+
 // Champs synchronisés d'une position (sans la vue du graphique).
 function syncedPosition(pos){
   const p = JSON.parse(JSON.stringify(pos));
@@ -329,10 +402,11 @@ function positionHash(pos, manual){
   ]));
 }
 
-// Empreinte d'un document entier : positions (contenu et ordre) et traces de suppression.
+// Empreinte d'un document entier : positions (contenu et ordre), cours Yahoo et traces de suppression.
 function docHash(doc){
+  const prices = doc.prices || {};
   return hashString(JSON.stringify([
-    doc.positions.map(p => [p.id, positionHash(p, doc.manual[p.id])]),
+    doc.positions.map(p => [p.id, positionHash(p, doc.manual[p.id]), pricesHash(prices[p.id])]),
     Object.entries(doc.deleted).sort((a, b) => (a[0] < b[0] ? -1 : 1)),
   ]));
 }
@@ -362,10 +436,14 @@ function parseSyncDoc(raw){
   const manual = {};
   const src = raw.manualPrices && typeof raw.manualPrices === "object" ? raw.manualPrices : {};
   positions.forEach(p => { const m = normalizeManual(src[p.id]); if(m) manual[p.id] = m; });
+  // Cours Yahoo : seulement ceux du symbole de la position (champ absent des fichiers plus anciens).
+  const prices = {};
+  const psrc = raw.prices && typeof raw.prices === "object" ? raw.prices : {};
+  positions.forEach(p => { const c = normalizePrices(psrc[p.id]); if(c && c.ticker === p.assetTicker) prices[p.id] = c; });
   const deleted = sanitizeDeleted(state.deleted);
   ids.forEach(id => { delete deleted[id]; });
   const orderAt = Number.isFinite(+state.orderAt) ? +state.orderAt : 0;
-  return { positions, manual, deleted, orderAt };
+  return { positions, manual, prices, deleted, orderAt };
 }
 
 /* Fichier distant : même format que la sauvegarde complète (« Restaurer une
@@ -381,6 +459,7 @@ function serializeSyncDoc(doc, { device = "" } = {}){
       orderAt: doc.orderAt,
     },
     manualPrices: doc.manual,
+    prices: doc.prices || {},
   };
   return JSON.stringify(file, null, 2)
     // Tableaux de nombres ou de chaînes, objets sans imbrication : sur une seule ligne.
@@ -454,16 +533,26 @@ function mergeSyncDocs(local, remote, base){
 
   const manual = {};
   order.forEach(id => { const m = picked.get(id).manual; if(m) manual[id] = m; });
+  // Cours Yahoo : union des deux copies, pour le symbole retenu ; jamais de conflit.
+  const prices = {};
+  order.forEach(id => {
+    const c = mergePriceSeries((local.prices || {})[id], (remote.prices || {})[id], picked.get(id).pos.assetTicker);
+    if(c) prices[id] = c;
+  });
   const doc = {
     positions: order.map(id => picked.get(id).pos),
     manual,
+    prices,
     deleted: sanitizeDeleted(deleted),
     orderAt: Math.max(local.orderAt, remote.orderAt),
   };
   return { doc, conflicts };
 }
 
-const syncEngine = { hashString, normalizeManual, positionHash, docHash, baseOf, parseSyncDoc, serializeSyncDoc, mergeSyncDocs };
+const syncEngine = {
+  hashString, normalizeManual, positionHash, docHash, baseOf, parseSyncDoc, serializeSyncDoc, mergeSyncDocs,
+  normalizePrices, mergeRows, pricesHash, mergePriceSeries,
+};
 
 /* ---------------------------------------------------------------------
    Store
@@ -587,16 +676,25 @@ function createStore({ storage = defaultStorage() } = {}){
     touch(null);
   }
 
-  // Historique importé tel que stocké, sous forme canonique.
+  // Historique importé et cours Yahoo tels que stockés, sous forme canonique.
   const readManualRaw = id => normalizeManual(io.read(MANUAL_PREFIX + id));
+  const readPricesRaw = id => normalizePrices(io.read(PRICES_PREFIX + id));
+  // Cours Yahoo de la position, s'ils correspondent à son symbole.
+  const pricesOf = pos => { const c = readPricesRaw(pos.id); return c && c.ticker === pos.assetTicker ? c : null; };
 
   function syncSnapshot(){
     persistSoon.flush();
-    const manual = {};
-    app.positions.forEach(p => { const m = readManualRaw(p.id); if(m) manual[p.id] = m; });
+    const manual = {}, prices = {};
+    app.positions.forEach(p => {
+      const m = readManualRaw(p.id);
+      if(m) manual[p.id] = m;
+      const c = pricesOf(p);
+      if(c) prices[p.id] = c;
+    });
     return {
       positions: app.positions.map(syncedPosition),
       manual,
+      prices,
       deleted: Object.assign({}, app.deleted),
       orderAt: app.orderAt,
     };
@@ -847,23 +945,53 @@ function createStore({ storage = defaultStorage() } = {}){
 
     flush(){ persistSoon.flush(); },
 
-    /* Cache des cours de la position (dernier téléchargement réussi), pour un
-       affichage immédiat au chargement et un mode dégradé sans proxy.
-       Format : { source: "yahoo", ticker, currency, fetchedAt, rows: [[s, o, h, l, c], …] } */
+    /* Cours Yahoo de la position, téléchargés ici ou reçus par synchronisation : affichage
+       immédiat, appareil sans proxy (iPad), téléchargement limité à ce qui manque.
+       Renvoie { fetchedAt, currency, name, exchange, from (s), candles } ou null. */
     readCandleCache(ticker, posId = app.activeId){
-      const c = io.read(PRICES_PREFIX + posId);
-      if(!c || c.ticker !== ticker || !Array.isArray(c.rows)) return null;
+      const c = readPricesRaw(posId);
+      if(!c || c.ticker !== (ticker || "").toUpperCase()) return null;
       return {
         fetchedAt: c.fetchedAt,
-        currency: c.currency || null,
+        currency: c.currency,
+        name: c.name,
+        exchange: c.exchange,
+        from: c.from,
         candles: c.rows.map(r => ({ ms: r[0] * 1000, open: r[1], high: r[2], low: r[3], close: r[4] })),
       };
     },
-    writeCandleCache(ticker, candles, currency, posId = app.activeId){
-      if(!app.positions.some(p => p.id === posId)) return;
-      const round = v => Math.round(v * 1e4) / 1e4;
-      const rows = candles.map(c => [Math.round(c.ms / 1000), round(c.open), round(c.high), round(c.low), round(c.close)]);
-      io.write(PRICES_PREFIX + posId, { source: "yahoo", ticker, currency, fetchedAt: Date.now(), rows });
+    /* Complète les cours de la position avec un téléchargement : les séances reçues
+       remplacent celles de même date, les autres sont gardées (Yahoo omet parfois une
+       séance). `splits` : divisions d'actions [{ ms, ratio }] ; les séances déjà connues
+       antérieures à une division sont ramenées à la nouvelle échelle, une seule fois.
+       `from` (s) : début de la période demandée. Renvoie true si les cours ont changé. */
+    writeCandleCache(ticker, candles, currency, posId = app.activeId, { name = null, exchange = null, from = null, splits = [] } = {}){
+      if(!app.positions.some(p => p.id === posId)) return false;
+      const sym = (ticker || "").toUpperCase();
+      const prev = readPricesRaw(posId);
+      const same = prev && prev.ticker === sym ? prev : null;
+      let rows = same ? same.rows : [];
+      const applied = new Set(same ? same.splits : []);
+      splits.forEach(sp => {
+        const at = Math.round(sp.ms / 1000);
+        if(applied.has(at) || !(sp.ratio > 0) || sp.ratio === 1) return;
+        rows = rows.map(r => (r[0] < at ? [r[0], ...r.slice(1).map(v => round4(v / sp.ratio))] : r));
+        applied.add(at);
+      });
+      const fresh = candles.map(c => [Math.round(c.ms / 1000), c.open, c.high, c.low, c.close]);
+      const next = normalizePrices({
+        ticker: sym,
+        currency: currency || (same && same.currency),
+        name: name || (same && same.name),
+        exchange: exchange || (same && same.exchange),
+        fetchedAt: Date.now(),
+        from: Math.min(...[from, same && same.from].filter(Number.isFinite)),
+        splits: [...applied],
+        rows: mergeRows(rows, fresh),
+      });
+      if(!next) return false;
+      io.write(PRICES_PREFIX + posId, next);
+      return pricesHash(same) !== pricesHash(next);
     },
     clearCandleCache(posId = app.activeId){
       io.remove(PRICES_PREFIX + posId);
@@ -896,12 +1024,24 @@ function createStore({ storage = defaultStorage() } = {}){
     /* Applique un document fusionné (ou la copie distante). Les modifications venues
        d'ailleurs ne changent pas les dates de modification et effacent l'historique
        annuler / rétablir des positions concernées (il rétablirait des données périmées).
-       Renvoie la liste des positions modifiées, ajoutées ou retirées. */
+       Renvoie { changed, prices } : positions modifiées, ajoutées ou retirées, et
+       positions dont les cours Yahoo ont changé. */
     syncApply(doc){
       persistSoon.flush();
       const before = new Map(app.positions.map(p => [p.id, p]));
       const prevOrder = app.positions.map(p => p.id).join();
       const changed = new Set();
+      // Cours Yahoo : écrits s'ils diffèrent, sans toucher aux données ni à l'historique d'annulation.
+      // Un document sans cours pour une position ne retire jamais ceux de l'appareil.
+      const pricesChanged = [];
+      doc.positions.forEach(p => {
+        const remote = (doc.prices || {})[p.id];
+        if(!remote) return;
+        const cur = readPricesRaw(p.id);
+        if(JSON.stringify(cur) === JSON.stringify(remote)) return;
+        io.write(PRICES_PREFIX + p.id, remote);
+        if(pricesHash(cur && cur.ticker === remote.ticker ? cur : null) !== pricesHash(remote)) pricesChanged.push(p.id);
+      });
       const next = doc.positions.map(p => {
         const cur = before.get(p.id);
         const localManual = cur ? readManualRaw(p.id) : null;
@@ -933,8 +1073,11 @@ function createStore({ storage = defaultStorage() } = {}){
       persist();
       if(app.activeId !== wasActive) emit("switch");
       else if(changed.has(app.activeId)) emit("sync");
-      else if(changed.size || prevOrder !== app.positions.map(p => p.id).join()) emit("positions");
-      return [...changed];
+      else {
+        if(changed.size || prevOrder !== app.positions.map(p => p.id).join()) emit("positions");
+        if(pricesChanged.includes(app.activeId)) emit("prices");
+      }
+      return { changed: [...changed], prices: pricesChanged };
     },
 
     /* Reprend une version écartée lors d'un conflit : remplace la position de même

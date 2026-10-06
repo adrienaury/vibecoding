@@ -469,3 +469,130 @@ test("jeton : expiration proche signalée, expiré = à reconnecter ; aucune don
   assert.equal(store.readSyncMeta(), null);
   assert.equal(s.status.state, "off");
 });
+
+/* ---------------------------------------------------------------------
+   Cours Yahoo synchronisés (issue #20)
+   --------------------------------------------------------------------- */
+
+const D0 = Date.UTC(2026, 1, 2);
+const candlesFor = (n, start = D0, close = i => 100 + i) => Array.from({ length: n }, (_, i) => {
+  const c = close(i);
+  return { ms: start + i * 86400000, open: c, high: c, low: c, close: c };
+});
+
+test("moteur : séries de cours fusionnées par date, sans conflit ni date de modification", () => {
+  const series = (fetchedAt, rows, ticker = "AI.PA") => E.normalizePrices({ ticker, fetchedAt, rows });
+  const a = series(10, [[1, 1, 1, 1, 1], [2, 2, 2, 2, 2], [3, 3, 3, 3, 3]]);
+  const b = series(20, [[3, 9, 9, 9, 9], [4, 4, 4, 4, 4]]);
+  const m = E.mergePriceSeries(a, b, "ai.pa");
+  assert.deepEqual(m.rows.map(r => r[4]), [1, 2, 9, 4], "union ; la copie la plus récente l'emporte pour une même date");
+  assert.equal(E.mergePriceSeries(a, series(30, [[5, 5, 5, 5, 5]], "MC.PA"), "AI.PA"), a, "autre symbole : écarté");
+  assert.equal(E.mergePriceSeries(a, null, ""), null, "position sans symbole : pas de cours");
+
+  const p = pos("p", "Air Liquide", { assetTicker: "AI.PA" });
+  const base = E.baseOf(doc([p]));
+  const local = doc([p], { prices: { p: a } });
+  const remote = doc([p], { prices: { p: b } });
+  assert.equal(E.positionHash(p, null), base.positions.p, "les cours n'entrent pas dans l'empreinte de la position");
+  assert.notEqual(E.docHash(local), E.docHash(remote), "mais bien dans celle du document");
+  const r = E.mergeSyncDocs(local, remote, base);
+  assert.equal(r.conflicts.length, 0);
+  assert.equal(r.doc.positions[0].modifiedAt, p.modifiedAt);
+  assert.deepEqual(r.doc.prices.p.rows.map(x => x[0]), [1, 2, 3, 4]);
+  // Un téléchargement sans nouveauté (seule la date change) ne demande pas d'écriture.
+  assert.equal(E.pricesHash(a), E.pricesHash(Object.assign({}, a, { fetchedAt: 99 })));
+});
+
+test("fichier distant : cours écrits dans `prices`, relus, et restaurables comme sauvegarde", () => {
+  const store = St.createStore({ storage: memoryStorage() });
+  store.update(s => { s.assetTicker = "AI.PA"; });
+  store.writeCandleCache("AI.PA", candlesFor(3), "EUR", store.activeId, { name: "Air Liquide" });
+  const snap = store.syncSnapshot();
+  const raw = JSON.parse(E.serializeSyncDoc(snap));
+  assert.equal(raw.prices[store.activeId].rows.length, 3);
+  assert.equal(E.parseSyncDoc(raw).prices[store.activeId].name, "Air Liquide");
+  // Fichier d'une version précédente, sans cours : lu sans erreur.
+  delete raw.prices;
+  assert.deepEqual(E.parseSyncDoc(raw).prices, {});
+  const other = St.createStore({ storage: memoryStorage() });
+  other.restoreBackup(JSON.parse(E.serializeSyncDoc(snap)));
+  assert.equal(other.readCandleCache("AI.PA", snap.positions[0].id).candles.length, 3);
+});
+
+test("deux appareils : les cours téléchargés sur le PC arrivent sur l'iPad, sans conflit ni perte d'annulation", async () => {
+  const remote = fakeRemote();
+  const pc = device(remote, "PC");
+  pc.store.update(s => { s.assetTicker = "AI.PA"; });
+  const id = pc.store.activeId;
+  pc.store.writeCandleCache("AI.PA", candlesFor(5), "EUR", id);
+  await pc.connect();
+  assert.equal(remote.doc().prices[id].rows.length, 5);
+
+  const ipad = device(remote, "iPad");
+  await ipad.connect("replace", (await ipad.sync.test(CONFIG)).remote);
+  assert.equal(ipad.store.readCandleCache("AI.PA").candles.length, 5, "cours reçus sans proxy");
+
+  // L'iPad modifie la position ; le PC complète les cours (dont la dernière séance, changée).
+  ipad.store.update(s => { s.feePercent = 0.5; });
+  await ipad.sync.syncNow();
+  const events = [];
+  ipad.store.subscribe(k => events.push(k));
+  assert.equal(pc.store.writeCandleCache("AI.PA", candlesFor(6, D0, i => (i === 4 ? 110 : 100 + i)), "EUR", id), true);
+  await pc.sync.syncNow();
+  assert.match(remote.commits.at(-1), /cours mis à jour \(AI\.PA\)/);
+  const res = await ipad.sync.syncNow();
+  assert.deepEqual(res.prices, [id]);
+  assert.deepEqual(res.pulled, [], "les cours ne sont pas une modification de la position");
+  assert.equal(res.conflicts.length, 0);
+  assert.ok(events.includes("prices"));
+  assert.equal(ipad.store.canUndo(), true, "historique d'annulation conservé");
+  const closes = ipad.store.readCandleCache("AI.PA").candles.map(c => c.close);
+  assert.deepEqual(closes, [100, 101, 102, 103, 110, 105]);
+  assert.equal(ipad.store.state.feePercent, 0.5);
+
+  // Un nouveau téléchargement sans nouveauté : aucun commit.
+  const commits = remote.commits.length;
+  assert.equal(pc.store.writeCandleCache("AI.PA", candlesFor(6, D0, i => (i === 4 ? 110 : 100 + i)), "EUR", id), false);
+  await pc.sync.syncNow();
+  assert.equal(remote.commits.length, commits);
+});
+
+test("fichier réécrit par une version précédente (sans cours) : les cours de l'appareil sont gardés et renvoyés", async () => {
+  const remote = fakeRemote();
+  const pc = device(remote, "PC");
+  pc.store.update(s => { s.assetTicker = "AI.PA"; });
+  pc.store.writeCandleCache("AI.PA", candlesFor(4), "EUR", pc.store.activeId);
+  await pc.connect();
+  const raw = JSON.parse(remote.text);
+  delete raw.prices;
+  remote.text = JSON.stringify(raw);
+  remote.sha = "ancienne-version";
+  await pc.sync.syncNow();
+  assert.equal(pc.store.readCandleCache("AI.PA").candles.length, 4);
+  assert.equal(remote.doc().prices[pc.store.activeId].rows.length, 4);
+});
+
+test("synchronisation demandée pendant un échange : relancée dès la fin", async () => {
+  const remote = fakeRemote();
+  const storage = memoryStorage();
+  const store = St.createStore({ storage });
+  const planned = [];
+  const timers = { set: (fn, ms) => { planned.push({ fn, ms }); return planned.length; }, clear: () => {} };
+  const sync = Sync.createSync({ store, createAdapter: remote.adapter, timers });
+  await sync.connect(CONFIG);
+  let release;
+  remote.beforeWrite = () => new Promise(r => { release = r; });
+  store.update(s => { s.feePercent = 2; });
+  const first = sync.syncNow();
+  await sleep(5);
+  store.update(s => { s.assetTicker = "AI.PA"; });
+  store.writeCandleCache("AI.PA", candlesFor(2), "EUR", store.activeId);
+  sync.syncNow();
+  release();
+  await first;
+  assert.equal(planned.at(-1).ms, 0, "relance immédiate");
+  await planned.at(-1).fn();
+  await sleep(5);
+  assert.equal(remote.doc().prices[store.activeId].rows.length, 2);
+  sync.stop();
+});

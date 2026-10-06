@@ -14,7 +14,7 @@ IRRViz 2 est une **application web progressive (PWA)** : servie en `https://` (o
   - Le bouton est masqué quand l'application est déjà ouverte en mode installé.
 
   L'application s'ouvre alors dans sa propre fenêtre, avec son icône.
-- **Hors ligne** : tout fonctionne (saisie, graphique, import / export, cours importés ou en cache) ; seul le téléchargement des cours Yahoo demande une connexion. Un badge « Hors ligne » l'indique, et les cours Yahoo en cache sont rafraîchis au retour de la connexion.
+- **Hors ligne** : tout fonctionne (saisie, graphique, import / export, cours importés ou enregistrés) ; seul le téléchargement des cours Yahoo demande une connexion. Un badge « Hors ligne » l'indique, et les cours Yahoo sont complétés au retour de la connexion.
 - **Mises à jour** : le service worker (`sw.js`) charge les fichiers depuis le réseau en priorité et ne sert le cache que hors ligne ou si le réseau ne répond pas en 4 s. Une nouvelle version publiée est donc visible dès le rechargement suivant, sans mélange d'anciens et de nouveaux fichiers.
 - Les données restent dans le `localStorage` du navigateur. Sur iPhone / iPad, l'application installée a **son propre stockage**, séparé de Safari : exportez une sauvegarde JSON depuis Safari puis restaurez-la dans l'application.
 - Ouverte directement depuis le disque (`file://`), l'application fonctionne comme avant, mais sans installation ni mode hors ligne (les navigateurs n'autorisent pas les service workers dans ce cas).
@@ -41,7 +41,8 @@ Sur iPhone / iPad, l'application installée a son propre stockage, séparé de S
 
 - **Quand** : à l'ouverture, au retour de la connexion, au retour de l'application au premier plan, une minute après la dernière modification (au plus cinq minutes pendant une saisie continue), quand l'application passe en arrière-plan avec des modifications en attente, et à la demande (*Synchroniser maintenant*). Les modifications rapprochées sont donc **regroupées en un seul commit**.
 - **Fichier** : `irrviz.json` (modifiable dans les options avancées), au format de la sauvegarde complète, indenté pour être lisible et modifiable sur GitHub ; *Données › Restaurer une sauvegarde* l'accepte aussi. Chaque synchronisation est un commit dont le message indique l'appareil et les positions modifiées : l'historique complet est consultable depuis la fenêtre de synchronisation.
-- **Ce qui est synchronisé** : les positions (transactions, seuils, frais, horizon, symbole, nom, ordre) et les historiques de cours importés. **Restent propres à l'appareil** : le cache des cours Yahoo (retéléchargeable), la vue du graphique, le thème, le panneau et le port du proxy.
+- **Ce qui est synchronisé** : les positions (transactions, seuils, frais, horizon, symbole, nom, ordre), les historiques de cours importés et les **cours Yahoo** (un iPad, sans proxy, affiche ainsi les cours récupérés sur l'ordinateur). **Restent propres à l'appareil** : la vue du graphique, le thème, le panneau et le port du proxy.
+- **Cours Yahoo** : traités comme un import. Ils sont envoyés juste après leur récupération (à l'ouverture, avec « Charger » ou au retour de la connexion), seulement s'ils ont changé : nouvelles séances, ou séance du jour modifiée. Ils ont leur propre fusion : union des séances par date (pour une même date, la récupération la plus récente l'emporte), sans conflit, sans dater la position ni toucher à l'historique annuler / rétablir.
 - **Fusion par position** : chaque position porte sa date de modification ; une position modifiée sur un seul appareil depuis la dernière synchronisation prend cette version. Une position supprimée laisse une trace et ne réapparaît pas, sauf si elle a été modifiée ailleurs après sa suppression.
 - **Conflits** : si un autre appareil a écrit entre la lecture et l'écriture, GitHub refuse l'écriture (le `sha` de la version remplacée ne correspond plus) : IRRViz relit, fusionne et réécrit. Une même position modifiée sur deux appareils : la plus récente est gardée et l'autre version est proposée (*Reprendre l'autre version*, *Garder les deux*, *Garder celle-ci*).
 - **État affiché** par le bouton nuage : synchronisé (vert), modifications en attente ou hors ligne (orange), conflit, jeton à remplacer ou erreur (rouge). Un fichier distant qui n'est pas une sauvegarde IRRViz n'est jamais écrasé.
@@ -104,7 +105,10 @@ Date;Valeur de part
 ### Actif (Yahoo Finance)
 - Indicateur d'état du proxy local, port configurable, bouton de test.
 - Nom, place de cotation et devise de l'actif affichés ; alerte si la devise n'est pas l'euro.
-- **Cache** des derniers cours téléchargés : affichage immédiat au rechargement, et consultation possible même sans proxy.
+- **Cours enregistrés** pour chaque position : affichage immédiat, consultation sans proxy, et synchronisés entre appareils.
+- **Seules les séances manquantes sont téléchargées** : à l'ouverture (toutes les positions suivies sur Yahoo, celle affichée d'abord) et avec « Charger », depuis la dernière séance connue moins 7 jours (pour corriger une séance lue en cours de bourse), plus la période antérieure si une transaction plus ancienne est ajoutée.
+- **Aucune séance connue n'est effacée** : Yahoo omet parfois une séance (la veille du dernier jour) ; les séances reçues remplacent celles de même date, les autres sont gardées.
+- **Divisions d'actions** : Yahoo ramène tout l'historique à la nouvelle échelle ; IRRViz applique la division aux séances déjà connues (une seule fois). Un écart de plus de 5 % sur les séances de recouvrement sans division annoncée provoque la relecture de toute la période, toujours sans rien effacer.
 
 ### Confort
 - Thème **clair, sombre ou automatique** (système).
@@ -150,7 +154,7 @@ python proxy.py          # http://127.0.0.1:8765
 python proxy.py 9000     # autre port, à reporter dans « Cours de l'actif › Proxy local »
 ```
 
-Le proxy n'accepte que `query1.finance.yahoo.com` et `query2.finance.yahoo.com`.
+Le proxy n'accepte que `query1.finance.yahoo.com` et `query2.finance.yahoo.com`. Il n'est utile que sur un appareil : avec la synchronisation, les autres (iPad…) reçoivent les cours qu'il récupère.
 
 ## Structure
 
@@ -165,13 +169,13 @@ IRRViz2/
 │   ├── github.js  synchronisation : lecture / écriture du fichier sur GitHub (API Contents)
 │   ├── sync.js    synchronisation : quand synchroniser, fusion, conflits, état affiché
 │   ├── csv.js     import / export CSV (transactions, historiques de cours)
-│   ├── asset.js   cours Yahoo Finance via le proxy
+│   ├── asset.js   cours Yahoo Finance via le proxy (téléchargement de ce qui manque)
 │   ├── chart.js   graphique SVG interactif
 │   └── app.js     interface
 ├── manifest.webmanifest, sw.js   application installable, hors ligne
 ├── icons/                        icônes de l'application (SVG + PNG)
 ├── proxy.py
-└── tests/         model.test.js, store.test.js, prices.test.js, sync.test.js, pwa.test.js
+└── tests/         model.test.js, store.test.js, prices.test.js, asset.test.js, sync.test.js, pwa.test.js
 ```
 
 Les scripts sont des scripts classiques (pas de modules ES) pour que l'application fonctionne aussi ouverte directement depuis le disque (`file://`).
