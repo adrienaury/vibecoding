@@ -224,7 +224,7 @@
           <p class="hint" id="manualHint" hidden>Pour les fonds, SCPI ou actifs absents de Yahoo : deux colonnes <code>date;cours</code> ou cinq <code>date;ouverture;haut;bas;clôture</code>. Les exports Yahoo Finance et Investing.com sont reconnus. Aucun proxy nécessaire.</p>
           <details class="sub" id="proxyDetails">
             <summary>Proxy local</summary>
-            <p class="hint">Yahoo Finance n'autorise pas les appels directs depuis le navigateur. Lancez le proxy fourni : <code>python proxy.py</code> dans le dossier IRRViz2.</p>
+            <p class="hint">Yahoo Finance n'autorise pas les appels directs depuis le navigateur. Lancez le proxy fourni : <code>python proxy.py</code> dans le dossier IRRViz2. Sur un appareil sans proxy (iPad), les cours récupérés ailleurs arrivent par la synchronisation.</p>
             <label class="field row">
               <span class="field-label">Port</span>
               <input type="text" inputmode="numeric" id="proxyPort" class="w-port" />
@@ -375,6 +375,7 @@
         <li>La courbe 0 % est votre <b>seuil de rentabilité</b> : en dessous, vous perdez de l'argent.</li>
         <li>Survolez le graphique : l'infobulle affiche le <b>TRI obtenu</b> si vous vendiez au prix pointé.</li>
         <li>Les zones hachurées correspondent aux périodes où la position est soldée.</li>
+        <li>Cours Yahoo : ils sont complétés à l'ouverture et avec <b>Charger</b> ; seules les séances manquantes sont téléchargées, et une séance déjà connue n'est jamais effacée.</li>
         <li>Pas de symbole Yahoo pour votre actif (fonds, SCPI, non coté) ? Dans <b>Cours de l'actif › Fichier CSV</b>, importez son historique de cours : aucun proxy n'est nécessaire.</li>
         <li>Suivez plusieurs actifs avec le menu <b>Positions</b> (en haut à gauche) : chacune a ses propres transactions, seuils, frais, horizon et cours.</li>
       </ul>
@@ -384,7 +385,7 @@
         <li>Une fois par appareil : collez un <b>jeton personnel à portée fine</b>, limité à ce dépôt (permission <i>Contents</i> en lecture et écriture). La fenêtre de synchronisation détaille la création du dépôt et du jeton.</li>
         <li>Synchronisation automatique : à l'ouverture, au retour de la connexion ou de l'application au premier plan, et quelques instants après vos modifications, regroupées en un seul envoi. Chaque envoi est un commit : l'historique complet reste consultable sur GitHub.</li>
         <li>Chaque position est fusionnée séparément ; une position supprimée ne réapparaît pas. Modifiée sur deux appareils à la fois, la version la plus récente est gardée et l'autre vous est proposée.</li>
-        <li>Les cours Yahoo en cache, la vue du graphique, le thème et le port du proxy restent propres à chaque appareil ; les historiques de cours importés sont synchronisés.</li>
+        <li>Les cours Yahoo et les historiques importés sont synchronisés : un iPad, sans proxy, affiche les cours récupérés sur l'ordinateur. La vue du graphique, le thème et le port du proxy restent propres à chaque appareil.</li>
       </ul>
       <h3>Installer l'application</h3>
       <p>Une fois installé, IRRViz s'ouvre dans sa propre fenêtre et <b>fonctionne hors ligne</b> : seul le téléchargement des cours Yahoo demande une connexion. Vos données restent stockées dans ce navigateur.</p>
@@ -493,7 +494,7 @@
         </div>
       </details>
       <div class="sync-result" id="syncResult" aria-live="polite"></div>
-      <p class="hint">Le jeton reste dans ce navigateur : il n'est envoyé qu'à <code>api.github.com</code> et ne figure pas dans les sauvegardes JSON. Le cache des cours Yahoo, la vue du graphique et les préférences d'affichage ne sont pas synchronisés.</p>
+      <p class="hint">Le jeton reste dans ce navigateur : il n'est envoyé qu'à <code>api.github.com</code> et ne figure pas dans les sauvegardes JSON. Les cours Yahoo sont synchronisés ; la vue du graphique et les préférences d'affichage ne le sont pas.</p>
     </div>
 
     <div class="dialog-body sync-body" data-view="status" hidden>

@@ -83,11 +83,18 @@ function describeChanges(before, after){
   });
   const ids = new Set(after.positions.map(p => p.id));
   prev.forEach((p, id) => { if(!ids.has(id)) removed.push(p.name); });
+  // Cours Yahoo complétés (positions existantes de part et d'autre).
+  const quotes = [];
+  after.positions.forEach(p => {
+    const c = (after.prices || {})[p.id];
+    if(c && prev.has(p.id) && E.pricesHash(c) !== E.pricesHash((before.prices || {})[p.id])) quotes.push(c.ticker);
+  });
   const list = names => names.slice(0, 3).join(", ") + (names.length > 3 ? ` et ${names.length - 3} autre(s)` : "");
   const parts = [];
   if(modified.length) parts.push(`modifié ${list(modified)}`);
   if(added.length) parts.push(`ajouté ${list(added)}`);
   if(removed.length) parts.push(`supprimé ${list(removed)}`);
+  if(quotes.length) parts.push(`cours mis à jour (${list([...new Set(quotes)])})`);
   if(!before) return "création du fichier de synchronisation";
   return parts.join(" ; ") || "ordre des positions";
 }
@@ -110,6 +117,7 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
   let firstPendingAt = pending ? now() : 0;
   let running = null;      // promesse de la synchronisation en cours
   let again = false;       // une modification est arrivée pendant la synchronisation
+  let againNow = false;    // une synchronisation a été demandée pendant la synchronisation
   let lastError = null;
   let failures = 0;
   let lastCheckAt = 0;
@@ -191,7 +199,7 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
   }
 
   async function run(){
-    const result = { pulled: [], pushed: false, conflicts: [] };
+    const result = { pulled: [], prices: [], pushed: false, conflicts: [] };
     for(let attempt = 1; ; attempt++){
       const remote = await adapter.read();
       let remoteDoc = null;
@@ -209,7 +217,11 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
 
       const { doc, conflicts } = remoteDoc ? E.mergeSyncDocs(local, remoteDoc, meta.base) : { doc: local, conflicts: [] };
       const mergedHash = E.docHash(doc);
-      if(mergedHash !== localHash) result.pulled.push(...store.syncApply(doc));
+      if(mergedHash !== localHash){
+        const applied = store.syncApply(doc);
+        result.pulled.push(...applied.changed);
+        result.prices.push(...applied.prices);
+      }
       addConflicts(conflicts);
       result.conflicts.push(...conflicts);
 
@@ -235,12 +247,13 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
     return result;
   }
 
-  /* Synchronise maintenant. Renvoie { pulled, pushed, conflicts }, ou null si la
-     synchronisation n'a pas eu lieu (non configurée, hors ligne, en erreur). */
+  /* Synchronise maintenant. Renvoie { pulled, prices, pushed, conflicts }, ou null si la
+     synchronisation n'a pas eu lieu (non configurée, hors ligne, en erreur). Demandée
+     pendant un échange en cours, elle est relancée dès la fin de celui-ci. */
   function syncNow({ manual = false } = {}){
     if(!meta || stopped) return Promise.resolve(null);
     if(running){
-      again = true;
+      againNow = true;
       // Seul l'appelant « à la demande » reçoit les erreurs ; les autres déclencheurs les ignorent.
       return manual ? running : running.catch(() => null);
     }
@@ -271,7 +284,8 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
         return null;
       }finally{
         running = null;
-        if(again){ again = false; if(pending) schedule(now() + opt.pushDelay); }
+        if(againNow){ again = againNow = false; schedule(now()); }
+        else if(again){ again = false; if(pending) schedule(now() + opt.pushDelay); }
         else if(pending && !lastError) schedule(now() + opt.pushDelay);
         emit();
       }

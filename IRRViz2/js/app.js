@@ -522,8 +522,11 @@ function renderAssetStatus(){
     const title = [assetData.name, assetData.exchange].filter(Boolean).map(U.escapeHtml).join(" · ");
     html = `<div class="asset-title"><b>${U.escapeHtml(assetData.ticker)}</b>${title ? ` <span>${title}</span>` : ""}</div>`;
     html += `<div class="asset-line">${assetData.candles.length} séances · dernier cours ${U.fmtEUR3.format(last.close).replace("€", assetData.currency && assetData.currency !== "EUR" ? U.escapeHtml(assetData.currency) : "€")} le ${U.fmtDate(last.ms)}</div>`;
-    if(assetData.cached){
-      html += `<div class="asset-line warn">Données en cache du ${U.fmtDate(assetData.fetchedAt)} à ${new Date(assetData.fetchedAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}.</div>`;
+    if(assetData.cached && assetData.fetchedAt){
+      const when = `${U.fmtDate(assetData.fetchedAt)} à ${new Date(assetData.fetchedAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`;
+      html += proxyOk === false
+        ? `<div class="asset-line">Cours enregistrés (récupérés le ${when}). Sans proxy local sur cet appareil, ils sont complétés depuis un appareil qui l'utilise, par la synchronisation.</div>`
+        : `<div class="asset-line muted">Cours enregistrés, récupérés le ${when}.</div>`;
     }
     if(assetData.currency && assetData.currency !== "EUR"){
       html += `<div class="asset-line warn"><svg class="ic"><use href="#i-warn"/></svg> Cotation en ${U.escapeHtml(assetData.currency)} alors que vos montants sont en euros : la comparaison n'a de sens que si les devises concordent.</div>`;
@@ -538,44 +541,90 @@ function renderAssetStatus(){
 }
 
 let assetRequest = 0;
-async function loadAsset(ticker, { silent = false } = {}){
+
+// Cours Yahoo de la position tels qu'enregistrés (téléchargés ici ou reçus par synchronisation).
+function cachedAssetData(sym, posId = store.activeId){
+  const c = store.readCandleCache(sym, posId);
+  return c ? { source: "yahoo", kind: "ohlc", ticker: sym, candles: c.candles, currency: c.currency, name: c.name, exchange: c.exchange, fetchedAt: c.fetchedAt, cached: true } : null;
+}
+
+/* Complète les cours Yahoo d'une position via le proxy (seulement ce qui manque) et
+   les enregistre. Renvoie true si de nouvelles séances sont arrivées ou si une séance
+   connue a changé (la dernière, lue en cours de bourse par exemple). */
+async function fetchPrices(posId, sym){
+  const pos = store.positions.find(p => p.id === posId);
+  if(!pos) return false;
+  const res = await IRR.asset.updateSeries({
+    ticker: sym, port: G().proxyPort, cache: store.readCandleCache(sym, posId),
+    transactions: pos.transactions, horizonIso: pos.horizonIso,
+  });
+  setProxyDot(true);
+  // Le cache et le nom automatique concernent la position qui a lancé la requête,
+  // même si l'utilisateur a changé de position pendant le téléchargement.
+  const owner = store.positions.find(p => p.id === posId);
+  if(!owner || owner.assetTicker !== sym) return false;
+  const changed = store.writeCandleCache(sym, res.candles, res.currency, posId, { name: res.name, exchange: res.exchange, from: res.from, splits: res.splits });
+  store.autoNamePosition(posId, sym);
+  return changed;
+}
+
+/* Charge les cours de la position active : affichage immédiat de ceux déjà connus, puis
+   complément via le proxy. `push` : envoyer aussitôt les cours nouveaux au dépôt synchronisé. */
+async function loadAsset(ticker, { silent = false, push = true } = {}){
   const sym = (ticker || "").trim().toUpperCase();
-  if(!sym) return clearAsset();
+  if(!sym){ clearAsset(); return false; }
   if(sym !== S().assetTicker) store.update(s => { s.assetTicker = sym; }, { kind: "none" });
-  if(!assetData || assetData.ticker !== sym){
-    const cache = store.readCandleCache(sym);
-    assetData = cache ? { source: "yahoo", kind: "ohlc", ticker: sym, candles: cache.candles, currency: cache.currency, fetchedAt: cache.fetchedAt, cached: true } : null;
-  }
+  if(!assetData || assetData.ticker !== sym) assetData = cachedAssetData(sym);
   const req = ++assetRequest;
   const posId = store.activeId;
   assetState = { status: "loading", ticker: sym };
   renderAssetStatus(); pushChart(); renderKpis(); renderLegend();
+  let changed = false;
   try{
-    const res = await IRR.asset.fetchCandles({ ticker: sym, port: G().proxyPort, transactions: S().transactions, horizonIso: S().horizonIso });
-    setProxyDot(true);
-    // Le cache et le nom automatique concernent la position qui a lancé la requête,
-    // même si l'utilisateur a changé de position pendant le téléchargement.
-    const owner = store.positions.find(p => p.id === posId);
-    if(owner && owner.assetTicker === sym){
-      store.writeCandleCache(sym, res.candles, res.currency, posId);
-      store.autoNamePosition(posId, sym);
-    }
-    if(req !== assetRequest) return;
-    if(S().priceSource !== "yahoo") return;
-    assetData = Object.assign(res, { source: "yahoo", kind: "ohlc", fetchedAt: Date.now(), cached: false });
+    changed = await fetchPrices(posId, sym);
+    if(push && changed) sync.syncNow();
+    if(req !== assetRequest || S().priceSource !== "yahoo") return changed;
+    const fresh = cachedAssetData(sym);
+    if(fresh) assetData = Object.assign(fresh, { cached: false });
     assetState = { status: "ok" };
-    if(!silent) toast(`${sym} : ${res.candles.length} séances chargées`, { type: "success", timeout: 2500 });
+    if(!silent && assetData) toast(`${sym} : ${changed ? "cours complétés" : "cours à jour"} (${assetData.candles.length} séances)`, { type: "success", timeout: 2500 });
   }catch(err){
-    if(req !== assetRequest) return;
+    if(req !== assetRequest) return false;
     if(err.code === "proxy") setProxyDot(false);
     const offline = navigator.onLine === false;
-    const message = offline
-      ? (assetData ? "Hors ligne : affichage des derniers cours en cache." : "Hors ligne : les cours ne peuvent pas être téléchargés.")
-      : err.message;
-    assetState = { status: "error", message };
+    // Proxy absent (iPad…) mais cours connus : on les affiche, sans erreur.
+    if(assetData && (offline || err.code === "proxy")) assetState = { status: "idle" };
+    else assetState = { status: "error", message: offline ? "Hors ligne : les cours ne peuvent pas être téléchargés." : err.message };
     if(!silent) toast(err.message, { type: "error", timeout: 7000 });
   }
   renderAssetStatus(); pushChart(); renderKpis(); renderLegend();
+  return changed;
+}
+
+/* À l'ouverture : complète les cours de toutes les positions suivies sur Yahoo (la position
+   affichée d'abord), puis envoie le tout au dépôt synchronisé en une seule fois. Sans
+   proxy (iPad), les cours connus sont simplement affichés. */
+async function refreshAllPrices(){
+  const list = store.positions.filter(p => p.assetTicker && p.priceSource === "yahoo");
+  if(!list.length) return;
+  if(!(await checkProxy(false))){
+    if(S().priceSource === "yahoo" && S().assetTicker && !assetData){
+      assetState = { status: "error", message: `Proxy local injoignable sur le port ${G().proxyPort}. Lancez « python proxy.py » puis réessayez.` };
+    }
+    renderAssetStatus();
+    return;
+  }
+  list.sort((a, b) => (b.id === store.activeId) - (a.id === store.activeId));
+  let changed = false;
+  for(const p of list){
+    if(p.id === store.activeId && S().priceSource === "yahoo"){
+      if(await loadAsset(p.assetTicker, { silent: true, push: false })) changed = true;
+    } else {
+      try{ if(await fetchPrices(p.id, p.assetTicker)) changed = true; }
+      catch(e){ /* position non affichée : l'erreur apparaîtra quand on l'ouvrira */ }
+    }
+  }
+  if(changed) sync.syncNow();
 }
 
 function clearAsset(){
@@ -588,9 +637,10 @@ function clearAsset(){
   renderAssetStatus(); pushChart(); renderKpis(); renderLegend();
 }
 
-// (Re)charge les cours de la position active selon sa source : historique importé,
-// ou cache Yahoo puis téléchargement si un symbole est défini.
-function syncAsset(){
+/* Affiche les cours de la position active selon sa source : historique importé, ou cours
+   Yahoo enregistrés. Le proxy n'est sollicité que si aucun cours n'est connu (les cours
+   sont complétés à l'ouverture et avec « Charger »). */
+function syncAsset({ fetch = true } = {}){
   assetRequest++;
   assetData = null;
   assetState = { status: "idle" };
@@ -599,23 +649,20 @@ function syncAsset(){
     const rec = store.readManualPrices();
     if(rec) assetData = manualAssetData(rec);
   } else if(S().assetTicker){
-    loadAsset(S().assetTicker, { silent: true });
-    return;
+    assetData = cachedAssetData(S().assetTicker);
+    if(!assetData && fetch && proxyOk !== false){
+      loadAsset(S().assetTicker, { silent: true });
+      return;
+    }
+    // Cours enregistrés : savoir si le proxy est là précise l'état affiché (appareil sans proxy).
+    if(assetData && proxyOk == null) checkProxy(false).then(() => { if(S().priceSource === "yahoo") renderAssetStatus(); });
   }
   renderAssetStatus();
 }
 
-// Position active modifiée sur un autre appareil : on ne recharge les cours que s'ils ont changé.
+// Position active modifiée sur un autre appareil : on réaffiche les cours enregistrés.
 function assetAfterSync(){
-  if(S().priceSource === "manual"){
-    assetRequest++;
-    const rec = store.readManualPrices();
-    assetData = rec ? manualAssetData(rec) : null;
-    assetState = { status: "idle" };
-    renderAssetStatus();
-  } else if(!assetData || assetData.source !== "yahoo" || assetData.ticker !== S().assetTicker){
-    syncAsset();
-  }
+  syncAsset({ fetch: false });
 }
 
 function manualAssetData(rec){
@@ -680,7 +727,7 @@ function initAsset(){
   const card = el.assetCard;
   card.addEventListener("toggle", () => { if(card.open && proxyOk == null && S().priceSource === "yahoo") checkProxy(false); });
 
-  syncAsset();
+  syncAsset({ fetch: false });
   if(!S().assetTicker && card.open && S().priceSource === "yahoo") checkProxy(false);
 }
 
@@ -1752,6 +1799,13 @@ store.subscribe(kind => {
   if(kind === "positions"){ renderPositions(); return; }
   if(kind === "switch") onSwitch();
   if(kind === "sync") assetAfterSync();
+  if(kind === "prices"){
+    // Cours de la position active reçus d'un autre appareil.
+    const d = S().priceSource === "yahoo" && cachedAssetData(S().assetTicker);
+    if(d){ assetData = d; if(assetState.status === "error") assetState = { status: "idle" }; }
+    refreshAssetViews();
+    return;
+  }
   if(kind === "ui"){
     renderToggles(); applyPanelState(); renderChips(); renderLegend(); pushChart();
     return;
@@ -1853,6 +1907,8 @@ function init(){
   initAsset();
   refreshOutputs();
   updateViewButtons();
+  // Cours Yahoo de toutes les positions complétés à l'ouverture (si le proxy local répond).
+  refreshAllPrices();
 
   if(store.origin === "fresh"){
     toast("Bienvenue ! Un exemple est chargé : remplacez-le par vos propres transactions.", {
