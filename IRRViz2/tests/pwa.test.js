@@ -62,3 +62,11 @@ test("politique de sécurité : empreinte du script en ligne à jour, connexions
   const connect = /connect-src ([^;]+)/.exec(csp[1])[1].trim().split(/\s+/);
   assert.deepEqual(connect, ["'self'", "https://api.github.com", "http://127.0.0.1:*"]);
 });
+
+test("version : la même dans index.html et dans util.js", () => {
+  const page = /<meta name="irrviz-version" content="([^"]+)"/.exec(read("index.html"));
+  const code = /const VERSION = "([^"]+)";/.exec(read("js/util.js"));
+  assert.ok(page && code, "version absente");
+  assert.equal(page[1], code[1], "changer la version aux deux endroits");
+  assert.ok(read("index.html").includes(`Version de la page : <code>${page[1]}</code>`), "version affichée dans le diagnostic à mettre à jour");
+});

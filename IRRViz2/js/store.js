@@ -237,6 +237,19 @@ function createIo(storage){
     removePosData(id){
       Object.values(POS_PREFIXES).forEach(pre => io.remove(pre + id));
     },
+    /* Place occupée par tout le site dans ce stockage, en caractères (le quota d'environ
+       5 Mo par site, partagé avec les autres pages de la même origine, compte 2 octets par caractère). */
+    usage(){
+      let chars = 0, keys = 0;
+      try{
+        for(let i = 0; i < storage.length; i++){
+          const k = storage.key(i);
+          chars += k.length + (storage.getItem(k) || "").length;
+          keys++;
+        }
+      }catch(e){ return null; }
+      return { chars, keys };
+    },
   };
   return io;
 }
@@ -1024,8 +1037,9 @@ function createStore({ storage = defaultStorage() } = {}){
     /* Applique un document fusionné (ou la copie distante). Les modifications venues
        d'ailleurs ne changent pas les dates de modification et effacent l'historique
        annuler / rétablir des positions concernées (il rétablirait des données périmées).
-       Renvoie { changed, prices } : positions modifiées, ajoutées ou retirées, et
-       positions dont les cours Yahoo ont changé. */
+       Renvoie { changed, prices, failed } : positions modifiées, ajoutées ou retirées,
+       positions dont les cours Yahoo ont changé, et données que le navigateur a refusé
+       d'enregistrer (stockage plein). */
     syncApply(doc){
       persistSoon.flush();
       const before = new Map(app.positions.map(p => [p.id, p]));
@@ -1034,12 +1048,13 @@ function createStore({ storage = defaultStorage() } = {}){
       // Cours Yahoo : écrits s'ils diffèrent, sans toucher aux données ni à l'historique d'annulation.
       // Un document sans cours pour une position ne retire jamais ceux de l'appareil.
       const pricesChanged = [];
+      const failed = [];      // écritures refusées par le navigateur (stockage plein)
       doc.positions.forEach(p => {
         const remote = (doc.prices || {})[p.id];
         if(!remote) return;
         const cur = readPricesRaw(p.id);
         if(JSON.stringify(cur) === JSON.stringify(remote)) return;
-        io.write(PRICES_PREFIX + p.id, remote);
+        if(!io.write(PRICES_PREFIX + p.id, remote)){ failed.push(`les cours de ${p.name}`); return; }
         if(pricesHash(cur && cur.ticker === remote.ticker ? cur : null) !== pricesHash(remote)) pricesChanged.push(p.id);
       });
       const next = doc.positions.map(p => {
@@ -1048,7 +1063,7 @@ function createStore({ storage = defaultStorage() } = {}){
         const remoteManual = doc.manual[p.id] || null;
         if(!cur || positionHash(cur, localManual) !== positionHash(p, remoteManual)){
           changed.add(p.id);
-          if(remoteManual) io.write(MANUAL_PREFIX + p.id, remoteManual);
+          if(remoteManual){ if(!io.write(MANUAL_PREFIX + p.id, remoteManual)) failed.push(`l'historique importé de ${p.name}`); }
           else io.remove(MANUAL_PREFIX + p.id);
         }
         const pos = sanitizePosition(JSON.parse(JSON.stringify(p)));
@@ -1070,14 +1085,14 @@ function createStore({ storage = defaultStorage() } = {}){
       }
       if(!keep.has(app.activeId)) app.activeId = app.positions[0].id;
       if(fresh) touch(fresh);
-      persist();
+      if(!io.write(STORAGE_KEY, app)) failed.push("les positions");
       if(app.activeId !== wasActive) emit("switch");
       else if(changed.has(app.activeId)) emit("sync");
       else {
         if(changed.size || prevOrder !== app.positions.map(p => p.id).join()) emit("positions");
         if(pricesChanged.includes(app.activeId)) emit("prices");
       }
-      return { changed: [...changed], prices: pricesChanged };
+      return { changed: [...changed], prices: pricesChanged, failed };
     },
 
     /* Reprend une version écartée lors d'un conflit : remplace la position de même
@@ -1114,6 +1129,9 @@ function createStore({ storage = defaultStorage() } = {}){
       const sample = SAMPLE_TRANSACTIONS.map(t => [t.iso, t.amount, t.quantity]).join();
       return !p.transactions.length || p.transactions.map(t => [t.iso, t.amount, t.quantity]).join() === sample;
     },
+
+    // Place occupée dans le stockage du navigateur (diagnostic) : { chars, keys } ou null.
+    storageUsage(){ return io.usage(); },
 
     // Réglages et état de la synchronisation (clé distincte, jamais incluse dans les sauvegardes).
     readSyncMeta(){ return io.read(SYNC_KEY); },

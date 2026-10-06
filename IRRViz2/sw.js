@@ -13,7 +13,7 @@
    APP_SHELL change (fichier ajouté, renommé ou supprimé).
    ========================================================================= */
 
-const VERSION = "2";
+const VERSION = "3";
 const CACHE = `irrviz2-shell-v${VERSION}`;
 const NETWORK_TIMEOUT_MS = 4000;
 
@@ -55,10 +55,15 @@ self.addEventListener("activate", event => {
   );
 });
 
+/* `no-cache` : le cache HTTP du navigateur est toujours revalidé auprès du serveur
+   (réponse 304 légère si rien n'a changé). Sans cela, une page récente pouvait être
+   servie avec des scripts d'une version précédente encore « frais » dans ce cache.
+   Les navigations gardent leur requête d'origine (une réponse redirigée y serait refusée). */
 function fetchWithTimeout(request){
+  const fresh = request.mode === "navigate" ? request : new Request(request.url, { cache: "no-cache", credentials: "same-origin" });
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("timeout")), NETWORK_TIMEOUT_MS);
-    fetch(request).then(
+    fetch(fresh).then(
       res => { clearTimeout(timer); resolve(res); },
       err => { clearTimeout(timer); reject(err); }
     );

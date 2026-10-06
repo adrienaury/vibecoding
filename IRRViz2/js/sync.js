@@ -118,6 +118,7 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
   let running = null;      // promesse de la synchronisation en cours
   let again = false;       // une modification est arrivée pendant la synchronisation
   let againNow = false;    // une synchronisation a été demandée pendant la synchronisation
+  let lastRead = null;     // résumé du dernier fichier distant lu (diagnostic)
   let lastError = null;
   let failures = 0;
   let lastCheckAt = 0;
@@ -142,6 +143,13 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
     if(lastError && lastError.code !== "network") return "error";
     if(pending || lastError) return isOnline() ? "pending" : "offline";
     return "synced";
+  }
+
+  // Résumé d'un fichier distant : nombre de positions et de séances de cours par position.
+  function summarize(remote, doc){
+    const prices = {};
+    if(doc) Object.entries(doc.prices || {}).forEach(([id, c]) => { prices[id] = { ticker: c.ticker, count: c.rows.length, last: c.rows[c.rows.length - 1][0] * 1000 }; });
+    return { at: now(), sha: remote ? remote.sha : null, size: remote ? remote.text.length : 0, positions: doc ? doc.positions.length : 0, prices, outcome: "" };
   }
 
   function status(){
@@ -173,6 +181,7 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
       config: meta ? Object.assign({}, meta.config, { token: undefined }) : null,
       repo: info,
       conflicts: meta ? meta.conflicts.slice() : [],
+      lastRead,
     };
   }
 
@@ -210,10 +219,12 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
         try{ remoteDoc = E.parseSyncDoc(raw); }
         catch(e){ throw syncError("invalid", "Le fichier distant n'est pas une sauvegarde IRRViz : choisissez un autre fichier."); }
       }
+      lastRead = summarize(remote, remoteDoc);
       const local = store.syncSnapshot();
       const localHash = E.docHash(local);
       // Rien n'a bougé, ni ici ni ailleurs.
-      if(remote && remote.sha === meta.sha && localHash === meta.docHash) break;
+      if(remote && remote.sha === meta.sha && localHash === meta.docHash){ lastRead.outcome = "inchangé"; break; }
+      lastRead.outcome = "fusionné";
 
       const { doc, conflicts } = remoteDoc ? E.mergeSyncDocs(local, remoteDoc, meta.base) : { doc: local, conflicts: [] };
       const mergedHash = E.docHash(doc);
@@ -221,6 +232,9 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
         const applied = store.syncApply(doc);
         result.pulled.push(...applied.changed);
         result.prices.push(...applied.prices);
+        if(applied.failed.length){
+          throw syncError("storage", `Stockage de cet appareil plein : impossible d'enregistrer ${applied.failed.slice(0, 3).join(", ")}${applied.failed.length > 3 ? "…" : ""}. Libérez de la place (voir le diagnostic).`);
+        }
       }
       addConflicts(conflicts);
       result.conflicts.push(...conflicts);
@@ -372,6 +386,15 @@ function createSync({ store, createAdapter, isOnline = () => true, timers = null
       save();
       pending = E.docHash(store.syncSnapshot()) !== meta.docHash;
       firstPendingAt = pending ? now() : 0;
+      return syncNow({ manual: true });
+    },
+
+    // Fusion complète forcée : oublie la dernière version lue, sans toucher aux données.
+    resyncAll(){
+      if(!meta) return Promise.resolve(null);
+      meta.sha = null;
+      meta.docHash = null;
+      save();
       return syncNow({ manual: true });
     },
 
